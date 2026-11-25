@@ -1,0 +1,390 @@
+(lldb) target create "C:\\work\\Tension\\tension-core\\target\\release\\tension-core.exe"
+Current executable set to 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64).
+(lldb) settings set -- target.run-args  "--debug" "--symbol-path" "C:\\work\\Tension\\examples\\io" "C:\\work\\Tension\\examples\\io\\build\\game.wasm"
+(lldb) command source -s 0 'C:\Users\abdurrahim\AppData\Local\Temp\w2-k\cmds.txt'
+Executing commands in 'C:\Users\abdurrahim\AppData\Local\Temp\w2-k\cmds.txt'.
+(lldb) settings set plugin.jit-loader.gdb.enable on
+(lldb) breakpoint set -f "game.ts" -l 10
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) run
+[tension-core] debug: guest C:\work\Tension\examples\io\build\game.wasm
+[tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is
+[tension-core] debug:   source map: ./game.wasm.map (found)
+[tension-core] debug:   symbol path: C:\work\Tension\examples\io
+[tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on
+[tension-core] debug:   lldb: settings set target.debug-file-search-paths C:\work\Tension\examples\io
+[tension-core] debug:   lldb: image list                     # guest is JIT(0x...)
+[tension-core] debug:   lldb: breakpoint set -f game.ts -l <line>   # source line
+[tension-core] debug:   lldb: breakpoint set -r 'game/'   # or by function name
+2026-11-21T20:06:35.644Z INFO  core: debug: guest already carries DWARF; leaving it alone
+2026-11-21T20:06:35.707Z INFO  core: async backend: promise (no stack switching on this target)
+2026-11-21T20:06:35.709Z INFO  core: res: writing under \\?\C:\work
+1 location added to breakpoint 1
+(lldb) === TensionCore demo game ===
+Process 22952 launched: 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64)
+Process 22952 stopped
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x000001fe16279fd2 JIT(0x1fe1635c040)`game/_start_game at game.ts:11:8
+   8   	
+   9   	export function _start_game(): void {
+   10  	  print("=== TensionCore demo game ===");
+-> 11  	  print("Arguments passed to the game:");
+    	       ^
+   12  	
+   13  	  let n = argCount();
+   14  	  print("  count = " + n.toString());
+(lldb) image dump sections
+Dumping sections for 28 modules.
+Sections for 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff78a400000-0x00007ff78a400400)  r--  0x00000000 0x00000400 0x00000000 tension-core.exe.PECOFF header
+  0x0000000000000001 code                   [0x00007ff78a401000-0x00007ff78b56f8a8)  r-x  0x00000400 0x0116ea00 0x60000020 tension-core.exe..text
+  0x0000000000000002 code                   [0x00007ff78b570000-0x00007ff78b570010)  r-x  0x0116ee00 0x00000200 0x60000020 tension-core.exe..text.un
+  0x0000000000000003 data                   [0x00007ff78b571000-0x00007ff78b997bb2)  r--  0x0116f000 0x00426c00 0x40000040 tension-core.exe..rdata
+  0x0000000000000004 data                   [0x00007ff78b998000-0x00007ff78b9bb100)  rw-  0x01595c00 0x0001c200 0xc0000040 tension-core.exe..data
+  0x0000000000000005 data                   [0x00007ff78b9bc000-0x00007ff78ba6a66c)  r--  0x015b1e00 0x000ae800 0x40000040 tension-core.exe..pdata
+  0x0000000000000006 data                   [0x00007ff78ba6b000-0x00007ff78ba6b008)  r--  0x01660600 0x00000200 0x40000040 tension-core.exe..xdata.u
+  0x0000000000000007 data                   [0x00007ff78ba6c000-0x00007ff78ba6c00c)  r--  0x01660800 0x00000200 0x40000040 tension-core.exe..pdata.u
+  0x0000000000000008 regular                [0x00007ff78ba6d000-0x00007ff78ba7b934)  r--  0x01660a00 0x0000ea00 0x42000040 tension-core.exe..reloc
+Sections for 'C:\Windows\System32\ntdll.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff945b30000-0x00007ff945b31000)  r--  0x00000000 0x00001000 0x00000000 ntdll.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff945b31000-0x00007ff945ca06fc)  r-x  0x00001000 0x00170000 0x60000020 ntdll.dll..text
+  0x0000000000000002 code                   [0x00007ff945ca1000-0x00007ff945ca12b0)  r-x  0x00171000 0x00001000 0x60000020 ntdll.dll.SCPCFG
+  0x0000000000000003 code                   [0x00007ff945ca2000-0x00007ff945ca22b0)  r-x  0x00172000 0x00001000 0x60000020 ntdll.dll.SCPCFGFP
+  0x0000000000000004 code                   [0x00007ff945ca3000-0x00007ff945ca32b0)  r-x  0x00173000 0x00001000 0x60000020 ntdll.dll.SCPCFGNP
+  0x0000000000000005 code                   [0x00007ff945ca4000-0x00007ff945ca42b0)  r-x  0x00174000 0x00001000 0x60000020 ntdll.dll.SCPCFGES
+  0x0000000000000006 code                   [0x00007ff945ca5000-0x00007ff945ca51bc)  r-x  0x00175000 0x00001000 0x60000020 ntdll.dll.RT
+  0x0000000000000007 code                   [0x00007ff945ca6000-0x00007ff945ca6931)  r-x  0x00176000 0x00001000 0x60000020 ntdll.dll.PAGE
+  0x0000000000000008 code                   [0x00007ff945ca7000-0x00007ff945ca8000)  r-x  0x00177000 0x00001000 0x60000020 ntdll.dll.fothk
+  0x0000000000000009 data                   [0x00007ff945ca8000-0x00007ff945d00e77)  r--  0x00178000 0x00059000 0x40000040 ntdll.dll..rdata
+  0x000000000000000a data                   [0x00007ff945d01000-0x00007ff945d09fd8)  rw-  0x001d1000 0x00002000 0xc0000040 ntdll.dll..data
+  0x000000000000000b data                   [0x00007ff945d0a000-0x00007ff945d1a9b0)  r--  0x001d3000 0x00011000 0x40000040 ntdll.dll..pdata
+  0x000000000000000c data                   [0x00007ff945d1b000-0x00007ff945d1b028)  r--  0x001e4000 0x00001000 0x40000040 ntdll.dll..00cfg
+  0x000000000000000d data                   [0x00007ff945d1c000-0x00007ff945d1f5b8)  rw-  0x001e5000 0x00004000 0xc0000040 ntdll.dll..mrdata
+  0x000000000000000e data                   [0x00007ff945d20000-0x00007ff945d9a690)  r--  0x001e9000 0x0007b000 0x40000040 ntdll.dll..rsrc
+  0x000000000000000f regular                [0x00007ff945d9b000-0x00007ff945d9b844)  r--  0x00264000 0x00001000 0x42000040 ntdll.dll..reloc
+Sections for 'C:\Windows\System32\kernel32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944540000-0x00007ff944541000)  r--  0x00000000 0x00001000 0x00000000 kernel32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944541000-0x00007ff9445c67d3)  r-x  0x00001000 0x00086000 0x60000020 kernel32.dll..text
+  0x0000000000000002 code                   [0x00007ff9445c7000-0x00007ff9445c8000)  r-x  0x00087000 0x00001000 0x60000020 kernel32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff9445c8000-0x00007ff944600794)  r--  0x00088000 0x00039000 0x40000040 kernel32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff944601000-0x00007ff9446027a8)  rw-  0x000c1000 0x00001000 0xc0000040 kernel32.dll..data
+  0x0000000000000005 data                   [0x00007ff944603000-0x00007ff9446077ac)  r--  0x000c2000 0x00005000 0x40000040 kernel32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944608000-0x00007ff9446080a8)  rw-  0x000c7000 0x00001000 0xc0000040 kernel32.dll..didat
+  0x0000000000000007 data                   [0x00007ff944609000-0x00007ff944609520)  r--  0x000c8000 0x00001000 0x40000040 kernel32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff94460a000-0x00007ff94460a728)  r--  0x000c9000 0x00001000 0x42000040 kernel32.dll..reloc
+Sections for 'C:\Windows\System32\KernelBase.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff943080000-0x00007ff943081000)  r--  0x00000000 0x00001000 0x00000000 KernelBase.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff943081000-0x00007ff94322b597)  r-x  0x00001000 0x001ab000 0x60000020 KernelBase.dll..text
+  0x0000000000000002 code                   [0x00007ff94322c000-0x00007ff94322d000)  r-x  0x001ac000 0x00001000 0x60000020 KernelBase.dll.fothk
+  0x0000000000000003 data                   [0x00007ff94322d000-0x00007ff94342cb48)  r--  0x001ad000 0x00200000 0x40000040 KernelBase.dll..rdata
+  0x0000000000000004 data                   [0x00007ff94342d000-0x00007ff943437fe0)  rw-  0x003ad000 0x00002000 0xc0000040 KernelBase.dll..data
+  0x0000000000000005 data                   [0x00007ff943438000-0x00007ff94344b05c)  r--  0x003af000 0x00014000 0x40000040 KernelBase.dll..pdata
+  0x0000000000000006 data                   [0x00007ff94344c000-0x00007ff94344c8f8)  rw-  0x003c3000 0x00001000 0xc0000040 KernelBase.dll..didat
+  0x0000000000000007 data                   [0x00007ff94344d000-0x00007ff94344d548)  r--  0x003c4000 0x00001000 0x40000040 KernelBase.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff94344e000-0x00007ff94348806c)  r--  0x003c5000 0x0003b000 0x42000040 KernelBase.dll..reloc
+Sections for 'C:\Windows\System32\ole32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff9450e0000-0x00007ff9450e1000)  r--  0x00000000 0x00001000 0x00000000 ole32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff9450e1000-0x00007ff9451b8b6c)  r-x  0x00001000 0x000d8000 0x60000020 ole32.dll..text
+  0x0000000000000002 code                   [0x00007ff9451b9000-0x00007ff9451ba000)  r-x  0x000d9000 0x00001000 0x60000020 ole32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff9451ba000-0x00007ff9451ebf22)  r--  0x000da000 0x00032000 0x40000040 ole32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff9451ec000-0x00007ff9451ee440)  rw-  0x0010c000 0x00001000 0xc0000040 ole32.dll..data
+  0x0000000000000005 data                   [0x00007ff9451ef000-0x00007ff9451fcd04)  r--  0x0010d000 0x0000e000 0x40000040 ole32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff9451fd000-0x00007ff9451fd900)  rw-  0x0011b000 0x00001000 0xc0000040 ole32.dll..didat
+  0x0000000000000007 data                   [0x00007ff9451fe000-0x00007ff945275fe8)  r--  0x0011c000 0x00078000 0x40000040 ole32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff945276000-0x00007ff945278718)  r--  0x00194000 0x00003000 0x42000040 ole32.dll..reloc
+Sections for 'C:\Windows\System32\msvcp_win.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff9435f0000-0x00007ff9435f1000)  r--  0x00000000 0x00001000 0x00000000 msvcp_win.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff9435f1000-0x00007ff943641f2a)  r-x  0x00001000 0x00051000 0x60000020 msvcp_win.dll..text
+  0x0000000000000002 code                   [0x00007ff943642000-0x00007ff943643000)  r-x  0x00052000 0x00001000 0x60000020 msvcp_win.dll.fothk
+  0x0000000000000003 data                   [0x00007ff943643000-0x00007ff94367e40a)  r--  0x00053000 0x0003c000 0x40000040 msvcp_win.dll..rdata
+  0x0000000000000004 data                   [0x00007ff94367f000-0x00007ff94368a7e0)  rw-  0x0008f000 0x00002000 0xc0000040 msvcp_win.dll..data
+  0x0000000000000005 data                   [0x00007ff94368b000-0x00007ff94368fd40)  r--  0x00091000 0x00005000 0x40000040 msvcp_win.dll..pdata
+  0x0000000000000006 data                   [0x00007ff943690000-0x00007ff943690040)  rw-  0x00096000 0x00001000 0xc0000040 msvcp_win.dll..didat
+  0x0000000000000007 data                   [0x00007ff943691000-0x00007ff943691410)  r--  0x00097000 0x00001000 0x40000040 msvcp_win.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff943692000-0x00007ff943692894)  r--  0x00098000 0x00001000 0x42000040 msvcp_win.dll..reloc
+Sections for 'C:\Windows\System32\ucrtbase.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff943490000-0x00007ff943491000)  r--  0x00000000 0x00001000 0x00000000 ucrtbase.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff943491000-0x00007ff943587163)  r-x  0x00001000 0x000f7000 0x60000020 ucrtbase.dll..text
+  0x0000000000000002 code                   [0x00007ff943588000-0x00007ff943589000)  r-x  0x000f8000 0x00001000 0x60000020 ucrtbase.dll.fothk
+  0x0000000000000003 data                   [0x00007ff943589000-0x00007ff9435c75a0)  r--  0x000f9000 0x0003f000 0x40000040 ucrtbase.dll..rdata
+  0x0000000000000004 data                   [0x00007ff9435c8000-0x00007ff9435ca624)  rw-  0x00138000 0x00002000 0xc0000040 ucrtbase.dll..data
+  0x0000000000000005 data                   [0x00007ff9435cb000-0x00007ff9435d835c)  r--  0x0013a000 0x0000e000 0x40000040 ucrtbase.dll..pdata
+  0x0000000000000006 data                   [0x00007ff9435d9000-0x00007ff9435d9100)  rw-  0x00148000 0x00001000 0xc0000040 ucrtbase.dll..fptable
+  0x0000000000000007 data                   [0x00007ff9435da000-0x00007ff9435da410)  r--  0x00149000 0x00001000 0x40000040 ucrtbase.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff9435db000-0x00007ff9435dbec0)  r--  0x0014a000 0x00001000 0x42000040 ucrtbase.dll..reloc
+Sections for 'C:\Windows\System32\gdi32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944230000-0x00007ff944231000)  r--  0x00000000 0x00001000 0x00000000 gdi32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944231000-0x00007ff94423e306)  r-x  0x00001000 0x0000e000 0x60000020 gdi32.dll..text
+  0x0000000000000002 code                   [0x00007ff94423f000-0x00007ff944240000)  r-x  0x0000f000 0x00001000 0x60000020 gdi32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff944240000-0x00007ff9442540a4)  r--  0x00010000 0x00015000 0x40000040 gdi32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff944255000-0x00007ff944255840)  rw-  0x00025000 0x00001000 0xc0000040 gdi32.dll..data
+  0x0000000000000005 data                   [0x00007ff944256000-0x00007ff944256e58)  r--  0x00026000 0x00001000 0x40000040 gdi32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944257000-0x00007ff944258228)  rw-  0x00027000 0x00002000 0xc0000040 gdi32.dll..didat
+  0x0000000000000007 data                   [0x00007ff944259000-0x00007ff9442593d8)  r--  0x00029000 0x00001000 0x40000040 gdi32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff94425a000-0x00007ff94425a51c)  r--  0x0002a000 0x00001000 0x42000040 gdi32.dll..reloc
+Sections for 'C:\Windows\System32\win32u.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff942cd0000-0x00007ff942cd1000)  r--  0x00000000 0x00001000 0x00000000 win32u.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff942cd1000-0x00007ff942cdcef6)  r-x  0x00001000 0x0000c000 0x60000020 win32u.dll..text
+  0x0000000000000002 data                   [0x00007ff942cdd000-0x00007ff942ceeb14)  r--  0x0000d000 0x00012000 0x40000040 win32u.dll..rdata
+  0x0000000000000003 data                   [0x00007ff942cef000-0x00007ff942cef620)  rw-  0x0001f000 0x00001000 0xc0000040 win32u.dll..data
+  0x0000000000000004 data                   [0x00007ff942cf0000-0x00007ff942cf4698)  r--  0x00020000 0x00005000 0x40000040 win32u.dll..pdata
+  0x0000000000000005 data                   [0x00007ff942cf5000-0x00007ff942cf53d8)  r--  0x00025000 0x00001000 0x40000040 win32u.dll..rsrc
+  0x0000000000000006 regular                [0x00007ff942cf6000-0x00007ff942cf6028)  r--  0x00026000 0x00001000 0x42000040 win32u.dll..reloc
+Sections for 'C:\Windows\System32\gdi32full.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff942dc0000-0x00007ff942dc1000)  r--  0x00000000 0x00001000 0x00000000 gdi32full.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff942dc1000-0x00007ff942e73bf8)  r-x  0x00001000 0x000b3000 0x60000020 gdi32full.dll..text
+  0x0000000000000002 code                   [0x00007ff942e74000-0x00007ff942e75000)  r-x  0x000b4000 0x00001000 0x60000020 gdi32full.dll.fothk
+  0x0000000000000003 data                   [0x00007ff942e75000-0x00007ff942ec7b60)  r--  0x000b5000 0x00053000 0x40000040 gdi32full.dll..rdata
+  0x0000000000000004 data                   [0x00007ff942ec8000-0x00007ff942ecc738)  rw-  0x00108000 0x00001000 0xc0000040 gdi32full.dll..data
+  0x0000000000000005 data                   [0x00007ff942ecd000-0x00007ff942ed3708)  r--  0x00109000 0x00007000 0x40000040 gdi32full.dll..pdata
+  0x0000000000000006 data                   [0x00007ff942ed4000-0x00007ff942ed4110)  rw-  0x00110000 0x00001000 0xc0000040 gdi32full.dll..didat
+  0x0000000000000007 data                   [0x00007ff942ed5000-0x00007ff942ee69c8)  r--  0x00111000 0x00012000 0x40000040 gdi32full.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff942ee7000-0x00007ff942ee86c8)  r--  0x00123000 0x00002000 0x42000040 gdi32full.dll..reloc
+Sections for 'C:\Windows\System32\user32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944610000-0x00007ff944611000)  r--  0x00000000 0x00001000 0x00000000 user32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944611000-0x00007ff9446cf308)  r-x  0x00001000 0x000bf000 0x60000020 user32.dll..text
+  0x0000000000000002 code                   [0x00007ff9446d0000-0x00007ff9446d1000)  r-x  0x000c0000 0x00001000 0x60000020 user32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff9446d1000-0x00007ff9446f60a6)  r--  0x000c1000 0x00026000 0x40000040 user32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff9446f7000-0x00007ff9446f9338)  rw-  0x000e7000 0x00001000 0xc0000040 user32.dll..data
+  0x0000000000000005 data                   [0x00007ff9446fa000-0x00007ff9447023b8)  r--  0x000e8000 0x00009000 0x40000040 user32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944703000-0x00007ff944703110)  rw-  0x000f1000 0x00001000 0xc0000040 user32.dll..didat
+  0x0000000000000007 data                   [0x00007ff944704000-0x00007ff9447ece50)  r--  0x000f2000 0x000e9000 0x40000040 user32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff9447ed000-0x00007ff9447ed5a8)  r--  0x001db000 0x00001000 0x42000040 user32.dll..reloc
+Sections for 'C:\Windows\System32\combase.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff945540000-0x00007ff945541000)  r--  0x00000000 0x00001000 0x00000000 combase.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff945541000-0x00007ff9457c651c)  r-x  0x00001000 0x00286000 0x60000020 combase.dll..text
+  0x0000000000000002 code                   [0x00007ff9457c7000-0x00007ff9457cc045)  r-x  0x00287000 0x00006000 0x60000020 combase.dll..proxy
+  0x0000000000000003 code                   [0x00007ff9457cd000-0x00007ff9457ce000)  r-x  0x0028d000 0x00001000 0x60000020 combase.dll.fothk
+  0x0000000000000004 data                   [0x00007ff9457ce000-0x00007ff94589192e)  r--  0x0028e000 0x000c4000 0x40000040 combase.dll..rdata
+  0x0000000000000005 data                   [0x00007ff945892000-0x00007ff945898410)  rw-  0x00352000 0x00003000 0xc0000040 combase.dll..data
+  0x0000000000000006 data                   [0x00007ff945899000-0x00007ff9458c27e4)  r--  0x00355000 0x0002a000 0x40000040 combase.dll..pdata
+  0x0000000000000007 data                   [0x00007ff9458c3000-0x00007ff9458c36b8)  rw-  0x0037f000 0x00001000 0xc0000040 combase.dll..didat
+  0x0000000000000008 data                   [0x00007ff9458c4000-0x00007ff9458d6d48)  r--  0x00380000 0x00013000 0x40000040 combase.dll..rsrc
+  0x0000000000000009 regular                [0x00007ff9458d7000-0x00007ff9458e4818)  r--  0x00393000 0x0000e000 0x42000040 combase.dll..reloc
+Sections for 'C:\Windows\System32\rpcrt4.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944410000-0x00007ff944411000)  r--  0x00000000 0x00001000 0x00000000 rpcrt4.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944411000-0x00007ff9444e44b6)  r-x  0x00001000 0x000d4000 0x60000020 rpcrt4.dll..text
+  0x0000000000000002 code                   [0x00007ff9444e5000-0x00007ff9444eb76b)  r-x  0x000d5000 0x00007000 0x60000020 rpcrt4.dll..ndr64
+  0x0000000000000003 code                   [0x00007ff9444ec000-0x00007ff9444ed000)  r-x  0x000dc000 0x00001000 0x60000020 rpcrt4.dll.fothk
+  0x0000000000000004 data                   [0x00007ff9444ed000-0x00007ff944512e52)  r--  0x000dd000 0x00026000 0x40000040 rpcrt4.dll..rdata
+  0x0000000000000005 data                   [0x00007ff944513000-0x00007ff944514660)  rw-  0x00103000 0x00001000 0xc0000040 rpcrt4.dll..data
+  0x0000000000000006 data                   [0x00007ff944515000-0x00007ff94451e738)  r--  0x00104000 0x0000a000 0x40000040 rpcrt4.dll..pdata
+  0x0000000000000007 data                   [0x00007ff94451f000-0x00007ff94451f298)  rw-  0x0010e000 0x00001000 0xc0000040 rpcrt4.dll..didat
+  0x0000000000000008 data                   [0x00007ff944520000-0x00007ff944525860)  r--  0x0010f000 0x00006000 0x40000040 rpcrt4.dll..rsrc
+  0x0000000000000009 regular                [0x00007ff944526000-0x00007ff944527878)  r--  0x00115000 0x00002000 0x42000040 rpcrt4.dll..reloc
+Sections for 'C:\Windows\System32\oleaut32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944150000-0x00007ff944151000)  r--  0x00000000 0x00001000 0x00000000 oleaut32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944151000-0x00007ff9441f121e)  r-x  0x00001000 0x000a1000 0x60000020 oleaut32.dll..text
+  0x0000000000000002 code                   [0x00007ff9441f2000-0x00007ff9441f3000)  r-x  0x000a2000 0x00001000 0x60000020 oleaut32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff9441f3000-0x00007ff9442182c8)  r--  0x000a3000 0x00026000 0x40000040 oleaut32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff944219000-0x00007ff94421b860)  rw-  0x000c9000 0x00001000 0xc0000040 oleaut32.dll..data
+  0x0000000000000005 data                   [0x00007ff94421c000-0x00007ff944224c4c)  r--  0x000ca000 0x00009000 0x40000040 oleaut32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944225000-0x00007ff9442251d0)  rw-  0x000d3000 0x00001000 0xc0000040 oleaut32.dll..didat
+  0x0000000000000007 data                   [0x00007ff944226000-0x00007ff9442267a8)  r--  0x000d4000 0x00001000 0x40000040 oleaut32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff944227000-0x00007ff944229aac)  r--  0x000d5000 0x00003000 0x42000040 oleaut32.dll..reloc
+Sections for 'C:\Windows\System32\bcryptprimitives.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff943730000-0x00007ff943731000)  r--  0x00000000 0x00001000 0x00000000 bcryptprimitives.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff943731000-0x00007ff9437b18d1)  r-x  0x00001000 0x00081000 0x60000020 bcryptprimitives.dll..text
+  0x0000000000000002 code                   [0x00007ff9437b2000-0x00007ff9437b3000)  r-x  0x00082000 0x00001000 0x60000020 bcryptprimitives.dll.fothk
+  0x0000000000000003 data                   [0x00007ff9437b3000-0x00007ff9437d2d54)  r--  0x00083000 0x00020000 0x40000040 bcryptprimitives.dll..rdata
+  0x0000000000000004 data                   [0x00007ff9437d3000-0x00007ff9437d4420)  rw-  0x000a3000 0x00001000 0xc0000040 bcryptprimitives.dll..data
+  0x0000000000000005 data                   [0x00007ff9437d5000-0x00007ff9437d96bc)  r--  0x000a4000 0x00005000 0x40000040 bcryptprimitives.dll..pdata
+  0x0000000000000006 data                   [0x00007ff9437da000-0x00007ff9437da448)  r--  0x000a9000 0x00001000 0x40000040 bcryptprimitives.dll..rsrc
+  0x0000000000000007 regular                [0x00007ff9437db000-0x00007ff9437db860)  r--  0x000aa000 0x00001000 0x42000040 bcryptprimitives.dll..reloc
+Sections for 'C:\Windows\System32\MMDevAPI.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff9370b0000-0x00007ff9370b1000)  r--  0x00000000 0x00001000 0x00000000 MMDevAPI.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff9370b1000-0x00007ff93711fcf5)  r-x  0x00001000 0x0006f000 0x60000020 MMDevAPI.dll..text
+  0x0000000000000002 code                   [0x00007ff937120000-0x00007ff937121000)  r-x  0x00070000 0x00001000 0x60000020 MMDevAPI.dll.fothk
+  0x0000000000000003 zero-fill              [0x00007ff937121000-0x00007ff937121020)  rw-  0x00000000 0x00000000 0xc0000080 MMDevAPI.dll.RT_BSS
+  0x0000000000000004 data                   [0x00007ff937122000-0x00007ff93713b738)  r--  0x00071000 0x0001a000 0x40000040 MMDevAPI.dll..rdata
+  0x0000000000000005 data                   [0x00007ff93713c000-0x00007ff93713dfc0)  rw-  0x0008b000 0x00002000 0xc0000040 MMDevAPI.dll..data
+  0x0000000000000006 data                   [0x00007ff93713e000-0x00007ff9371441a4)  r--  0x0008d000 0x00007000 0x40000040 MMDevAPI.dll..pdata
+  0x0000000000000007 data                   [0x00007ff937145000-0x00007ff937145338)  rw-  0x00094000 0x00001000 0xc0000040 MMDevAPI.dll..didat
+  0x0000000000000008 data                   [0x00007ff937146000-0x00007ff937146020)  rw-  0x00095000 0x00001000 0xc0000040 MMDevAPI.dll.RT_DATA
+  0x0000000000000009 data                   [0x00007ff937147000-0x00007ff937147730)  r--  0x00096000 0x00001000 0x40000040 MMDevAPI.dll..rsrc
+  0x000000000000000a regular                [0x00007ff937148000-0x00007ff9371492e0)  r--  0x00097000 0x00002000 0x42000040 MMDevAPI.dll..reloc
+Sections for 'C:\Windows\System32\imm32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944f50000-0x00007ff944f51000)  r--  0x00000000 0x00001000 0x00000000 imm32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944f51000-0x00007ff944f6e4a6)  r-x  0x00001000 0x0001e000 0x60000020 imm32.dll..text
+  0x0000000000000002 code                   [0x00007ff944f6f000-0x00007ff944f70000)  r-x  0x0001f000 0x00001000 0x60000020 imm32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff944f70000-0x00007ff944f76194)  r--  0x00020000 0x00007000 0x40000040 imm32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff944f77000-0x00007ff944f78000)  rw-  0x00027000 0x00001000 0xc0000040 imm32.dll..data
+  0x0000000000000005 data                   [0x00007ff944f78000-0x00007ff944f79134)  r--  0x00028000 0x00002000 0x40000040 imm32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944f7a000-0x00007ff944f7a410)  rw-  0x0002a000 0x00001000 0xc0000040 imm32.dll..didat
+  0x0000000000000007 data                   [0x00007ff944f7b000-0x00007ff944f7fc40)  r--  0x0002b000 0x00005000 0x40000040 imm32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff944f80000-0x00007ff944f801f4)  r--  0x00030000 0x00001000 0x42000040 imm32.dll..reloc
+Sections for 'C:\Windows\System32\version.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff939db0000-0x00007ff939db1000)  r--  0x00000000 0x00001000 0x00000000 version.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff939db1000-0x00007ff939db39d0)  r-x  0x00001000 0x00003000 0x60000020 version.dll..text
+  0x0000000000000002 code                   [0x00007ff939db4000-0x00007ff939db5000)  r-x  0x00004000 0x00001000 0x60000020 version.dll.fothk
+  0x0000000000000003 data                   [0x00007ff939db5000-0x00007ff939db6ce6)  r--  0x00005000 0x00002000 0x40000040 version.dll..rdata
+  0x0000000000000004 data                   [0x00007ff939db7000-0x00007ff939db7720)  rw-  0x00007000 0x00001000 0xc0000040 version.dll..data
+  0x0000000000000005 data                   [0x00007ff939db8000-0x00007ff939db8228)  r--  0x00008000 0x00001000 0x40000040 version.dll..pdata
+  0x0000000000000006 data                   [0x00007ff939db9000-0x00007ff939db9428)  r--  0x00009000 0x00001000 0x40000040 version.dll..rsrc
+  0x0000000000000007 regular                [0x00007ff939dba000-0x00007ff939dba084)  r--  0x0000a000 0x00001000 0x42000040 version.dll..reloc
+Sections for 'C:\Windows\System32\advapi32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff945470000-0x00007ff945471000)  r--  0x00000000 0x00001000 0x00000000 advapi32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff945471000-0x00007ff9454e3924)  r-x  0x00001000 0x00073000 0x60000020 advapi32.dll..text
+  0x0000000000000002 code                   [0x00007ff9454e4000-0x00007ff9454e5000)  r-x  0x00074000 0x00001000 0x60000020 advapi32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff9454e5000-0x00007ff94551d78e)  r--  0x00075000 0x00039000 0x40000040 advapi32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff94551e000-0x00007ff945522ad8)  rw-  0x000ae000 0x00003000 0xc0000040 advapi32.dll..data
+  0x0000000000000005 data                   [0x00007ff945523000-0x00007ff945527254)  r--  0x000b1000 0x00005000 0x40000040 advapi32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff945528000-0x00007ff945528470)  rw-  0x000b6000 0x00001000 0xc0000040 advapi32.dll..didat
+  0x0000000000000007 data                   [0x00007ff945529000-0x00007ff9455295c8)  r--  0x000b7000 0x00001000 0x40000040 advapi32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff94552a000-0x00007ff94552bb18)  r--  0x000b8000 0x00002000 0x42000040 advapi32.dll..reloc
+Sections for 'C:\Windows\System32\winmm.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff936240000-0x00007ff936241000)  r--  0x00000000 0x00001000 0x00000000 winmm.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff936241000-0x00007ff93625daac)  r-x  0x00001000 0x0001d000 0x60000020 winmm.dll..text
+  0x0000000000000002 code                   [0x00007ff93625e000-0x00007ff93625f000)  r-x  0x0001e000 0x00001000 0x60000020 winmm.dll.fothk
+  0x0000000000000003 data                   [0x00007ff93625f000-0x00007ff936268242)  r--  0x0001f000 0x0000a000 0x40000040 winmm.dll..rdata
+  0x0000000000000004 data                   [0x00007ff936269000-0x00007ff93626b460)  rw-  0x00029000 0x00001000 0xc0000040 winmm.dll..data
+  0x0000000000000005 data                   [0x00007ff93626c000-0x00007ff93626d854)  r--  0x0002a000 0x00002000 0x40000040 winmm.dll..pdata
+  0x0000000000000006 data                   [0x00007ff93626e000-0x00007ff93626e5d0)  rw-  0x0002c000 0x00001000 0xc0000040 winmm.dll..didat
+  0x0000000000000007 data                   [0x00007ff93626f000-0x00007ff93626f010)  r--  0x0002d000 0x00001000 0x40000040 winmm.dll..guids
+  0x0000000000000008 data                   [0x00007ff936270000-0x00007ff9362743c8)  r--  0x0002e000 0x00005000 0x40000040 winmm.dll..rsrc
+  0x0000000000000009 regular                [0x00007ff936275000-0x00007ff9362752c4)  r--  0x00033000 0x00001000 0x42000040 winmm.dll..reloc
+Sections for 'C:\Windows\System32\msvcrt.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x0000000180000000-0x0000000180001000)* r--  0x00000000 0x00001000 0x00000000 msvcrt.dll.PECOFF header
+  0x0000000000000001 code                   [0x0000000180001000-0x000000018007d749)* r-x  0x00001000 0x0007d000 0x60000020 msvcrt.dll..text
+  0x0000000000000002 code                   [0x000000018007e000-0x000000018007f000)* r-x  0x0007e000 0x00001000 0x60000020 msvcrt.dll.fothk
+  0x0000000000000003 data                   [0x000000018007f000-0x000000018009cb66)* r--  0x0007f000 0x0001e000 0x40000040 msvcrt.dll..rdata
+  0x0000000000000004 data                   [0x000000018009d000-0x00000001800a17e0)* rw-  0x0009d000 0x00003000 0xc0000040 msvcrt.dll..data
+  0x0000000000000005 data                   [0x00000001800a2000-0x00000001800a6d1c)* r--  0x000a0000 0x00005000 0x40000040 msvcrt.dll..pdata
+  0x0000000000000006 data                   [0x00000001800a7000-0x00000001800a73f0)* r--  0x000a5000 0x00001000 0x40000040 msvcrt.dll..rsrc
+  0x0000000000000007 regular                [0x00000001800a8000-0x00000001800a85f4)* r--  0x000a6000 0x00001000 0x42000040 msvcrt.dll..reloc
+Sections for 'C:\Windows\System32\msvcrt.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x0000000180000000-0x0000000180001000)* r--  0x00000000 0x00001000 0x00000000 msvcrt.dll.PECOFF header
+  0x0000000000000001 code                   [0x0000000180001000-0x000000018007d749)* r-x  0x00001000 0x0007d000 0x60000020 msvcrt.dll..text
+  0x0000000000000002 code                   [0x000000018007e000-0x000000018007f000)* r-x  0x0007e000 0x00001000 0x60000020 msvcrt.dll.fothk
+  0x0000000000000003 data                   [0x000000018007f000-0x000000018009cb66)* r--  0x0007f000 0x0001e000 0x40000040 msvcrt.dll..rdata
+  0x0000000000000004 data                   [0x000000018009d000-0x00000001800a17e0)* rw-  0x0009d000 0x00003000 0xc0000040 msvcrt.dll..data
+  0x0000000000000005 data                   [0x00000001800a2000-0x00000001800a6d1c)* r--  0x000a0000 0x00005000 0x40000040 msvcrt.dll..pdata
+  0x0000000000000006 data                   [0x00000001800a7000-0x00000001800a73f0)* r--  0x000a5000 0x00001000 0x40000040 msvcrt.dll..rsrc
+  0x0000000000000007 regular                [0x00000001800a8000-0x00000001800a85f4)* r--  0x000a6000 0x00001000 0x42000040 msvcrt.dll..reloc
+Sections for 'C:\Windows\System32\sechost.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff943fb0000-0x00007ff943fb1000)  r--  0x00000000 0x00001000 0x00000000 sechost.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff943fb1000-0x00007ff94401fd8c)  r-x  0x00001000 0x0006f000 0x60000020 sechost.dll..text
+  0x0000000000000002 code                   [0x00007ff944020000-0x00007ff944021000)  r-x  0x00070000 0x00001000 0x60000020 sechost.dll.fothk
+  0x0000000000000003 data                   [0x00007ff944021000-0x00007ff94404a908)  r--  0x00071000 0x0002a000 0x40000040 sechost.dll..rdata
+  0x0000000000000004 data                   [0x00007ff94404b000-0x00007ff94404eca8)  rw-  0x0009b000 0x00003000 0xc0000040 sechost.dll..data
+  0x0000000000000005 data                   [0x00007ff94404f000-0x00007ff944052ffc)  r--  0x0009e000 0x00004000 0x40000040 sechost.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944053000-0x00007ff944053260)  rw-  0x000a2000 0x00001000 0xc0000040 sechost.dll..didat
+  0x0000000000000007 data                   [0x00007ff944054000-0x00007ff9440552b8)  r--  0x000a3000 0x00002000 0x40000040 sechost.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff944056000-0x00007ff94405761c)  r--  0x000a5000 0x00002000 0x42000040 sechost.dll..reloc
+Sections for 'C:\Windows\System32\setupapi.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff944a20000-0x00007ff944a21000)  r--  0x00000000 0x00001000 0x00000000 setupapi.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff944a21000-0x00007ff944b0a77e)  r-x  0x00001000 0x000ea000 0x60000020 setupapi.dll..text
+  0x0000000000000002 code                   [0x00007ff944b0b000-0x00007ff944b0c000)  r-x  0x000eb000 0x00001000 0x60000020 setupapi.dll.fothk
+  0x0000000000000003 data                   [0x00007ff944b0c000-0x00007ff944b44adc)  r--  0x000ec000 0x00039000 0x40000040 setupapi.dll..rdata
+  0x0000000000000004 data                   [0x00007ff944b45000-0x00007ff944b4c2c0)  rw-  0x00125000 0x00006000 0xc0000040 setupapi.dll..data
+  0x0000000000000005 data                   [0x00007ff944b4d000-0x00007ff944b53204)  r--  0x0012b000 0x00007000 0x40000040 setupapi.dll..pdata
+  0x0000000000000006 data                   [0x00007ff944b54000-0x00007ff944b54ed8)  rw-  0x00132000 0x00001000 0xc0000040 setupapi.dll..didat
+  0x0000000000000007 data                   [0x00007ff944b55000-0x00007ff944ea59b0)  r--  0x00133000 0x00351000 0x40000040 setupapi.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff944ea6000-0x00007ff944ea6d20)  r--  0x00484000 0x00001000 0x42000040 setupapi.dll..reloc
+Sections for 'C:\Windows\System32\shell32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff9437f0000-0x00007ff9437f1000)  r--  0x00000000 0x00001000 0x00000000 shell32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff9437f1000-0x00007ff943de6421)  r-x  0x00001000 0x005f6000 0x60000020 shell32.dll..text
+  0x0000000000000002 code                   [0x00007ff943de7000-0x00007ff943de8000)  r-x  0x005f7000 0x00001000 0x60000020 shell32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff943de8000-0x00007ff943f2fd88)  r--  0x005f8000 0x00148000 0x40000040 shell32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff943f30000-0x00007ff943f3b310)  rw-  0x00740000 0x00004000 0xc0000040 shell32.dll..data
+  0x0000000000000005 data                   [0x00007ff943f3c000-0x00007ff943f7f71c)  r--  0x00744000 0x00044000 0x40000040 shell32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff943f80000-0x00007ff943f83da0)  rw-  0x00788000 0x00004000 0xc0000040 shell32.dll..didat
+  0x0000000000000007 data                   [0x00007ff943f84000-0x00007ff943f8c5a0)  r--  0x0078c000 0x00009000 0x40000040 shell32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff943f8d000-0x00007ff943f9f060)  r--  0x00795000 0x00013000 0x42000040 shell32.dll..reloc
+Sections for 'C:\Windows\System32\vcruntime140.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff92b610000-0x00007ff92b610400)  r--  0x00000000 0x00000400 0x00000000 vcruntime140.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff92b611000-0x00007ff92b62edbb)  r-x  0x00000400 0x0001de00 0x60000020 vcruntime140.dll..text
+  0x0000000000000002 code                   [0x00007ff92b62f000-0x00007ff92b630000)  r-x  0x0001e200 0x00001000 0x60000020 vcruntime140.dll.fothk
+  0x0000000000000003 data                   [0x00007ff92b630000-0x00007ff92b635032)  r--  0x0001f200 0x00005200 0x40000040 vcruntime140.dll..rdata
+  0x0000000000000004 data                   [0x00007ff92b636000-0x00007ff92b63637c)  rw-  0x00024400 0x00000400 0xc0000040 vcruntime140.dll..data
+  0x0000000000000005 data                   [0x00007ff92b637000-0x00007ff92b638200)  r--  0x00024800 0x00001200 0x40000040 vcruntime140.dll..pdata
+  0x0000000000000006 data                   [0x00007ff92b639000-0x00007ff92b639448)  r--  0x00025a00 0x00000600 0x40000040 vcruntime140.dll._RDATA
+  0x0000000000000007 data                   [0x00007ff92b63a000-0x00007ff92b63a3d0)  r--  0x00026000 0x00000400 0x40000040 vcruntime140.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff92b63b000-0x00007ff92b63b418)  r--  0x00026400 0x00000600 0x42000040 vcruntime140.dll..reloc
+Sections for 'C:\Windows\System32\cfgmgr32.dll' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff regular                [0x00007ff9427e0000-0x00007ff9427e1000)  r--  0x00000000 0x00001000 0x00000000 cfgmgr32.dll.PECOFF header
+  0x0000000000000001 code                   [0x00007ff9427e1000-0x00007ff942819235)  r-x  0x00001000 0x00039000 0x60000020 cfgmgr32.dll..text
+  0x0000000000000002 code                   [0x00007ff94281a000-0x00007ff94281b000)  r-x  0x0003a000 0x00001000 0x60000020 cfgmgr32.dll.fothk
+  0x0000000000000003 data                   [0x00007ff94281b000-0x00007ff94282880c)  r--  0x0003b000 0x0000e000 0x40000040 cfgmgr32.dll..rdata
+  0x0000000000000004 data                   [0x00007ff942829000-0x00007ff94282a1f8)  rw-  0x00049000 0x00001000 0xc0000040 cfgmgr32.dll..data
+  0x0000000000000005 data                   [0x00007ff94282b000-0x00007ff94282d568)  r--  0x0004a000 0x00003000 0x40000040 cfgmgr32.dll..pdata
+  0x0000000000000006 data                   [0x00007ff94282e000-0x00007ff94282e0b8)  rw-  0x0004d000 0x00001000 0xc0000040 cfgmgr32.dll..didat
+  0x0000000000000007 data                   [0x00007ff94282f000-0x00007ff9428302c8)  r--  0x0004e000 0x00002000 0x40000040 cfgmgr32.dll..rsrc
+  0x0000000000000008 regular                [0x00007ff942831000-0x00007ff94283137c)  r--  0x00050000 0x00001000 0x42000040 cfgmgr32.dll..reloc
+Sections for 'JIT(0x1fe1635c040)(0x000001fe1635c040)' (x86_64):
+  SectID             Type                   Load Address                             Perm File Off.  File Size  Flags      Section Name
+  ------------------ ---------------------- ---------------------------------------  ---- ---------- ---------- ---------- ----------------------------
+  0xffffffffffffffff container              [0x000001fe16271000-0x000001fe1627d000)  ---  0x00001000 0x0000c000 0x00000000 JIT(0x1fe1635c040).PT_LOAD[0]
+  0x0000000000000003 code                   [0x000001fe16271000-0x000001fe1627d000)  r-x  0x00001000 0x0000c000 0x00000006 JIT(0x1fe1635c040).PT_LOAD[0]..text
+  0x0000000000000001 regular                [0x0000000000000000-0x0000000000000423)  r--  0x00000040 0x00000423 0x00000002 JIT(0x1fe1635c040)..wasmtime.engine
+  0x0000000000000009 dwarf-abbrev                                                    ---  0x000104d7 0x000000bc 0x00000000 JIT(0x1fe1635c040)..debug_abbrev
+  0x000000000000000a dwarf-str                                                       ---  0x00010593 0x000000c0 0x00000000 JIT(0x1fe1635c040)..debug_str
+  0x000000000000000b dwarf-line                                                      ---  0x00010653 0x000022cd 0x00000000 JIT(0x1fe1635c040)..debug_line
+  0x000000000000000c elf-relocation-entries                                          ---  0x00067778 0x00000780 0x00000040 JIT(0x1fe1635c040)..rela.debug_line
+  0x000000000000000d dwarf-ranges                                                    ---  0x00012920 0x0001deb0 0x00000000 JIT(0x1fe1635c040)..debug_ranges
+  0x000000000000000e elf-relocation-entries                                          ---  0x00067ef8 0x00059bb0 0x00000040 JIT(0x1fe1635c040)..rela.debug_ranges
+  0x000000000000000f dwarf-loc                                                       ---  0x000307d0 0x00006eec 0x00000000 JIT(0x1fe1635c040)..debug_loc
+  0x0000000000000010 elf-relocation-entries                                          ---  0x000c1aa8 0x0000dd40 0x00000040 JIT(0x1fe1635c040)..rela.debug_loc
+  0x0000000000000011 dwarf-info                                                      ---  0x000376bc 0x0000499a 0x00000000 JIT(0x1fe1635c040)..debug_info
+  0x0000000000000012 elf-relocation-entries                                          ---  0x000cf7e8 0x00005ee0 0x00000040 JIT(0x1fe1635c040)..rela.debug_info
+  0x0000000000000013 dwarf-frame                                                     ---  0x0003c056 0x00001da0 0x00000000 JIT(0x1fe1635c040)..debug_frame
+  0x0000000000000014 elf-relocation-entries                                          ---  0x000d56c8 0x00001fe0 0x00000040 JIT(0x1fe1635c040)..rela.debug_frame
+  0x0000000000000018 elf-symbol-table                                                ---  0x00063568 0x000012f0 0x00000000 JIT(0x1fe1635c040)..symtab
+  0x0000000000000019 regular                                                         ---  0x00064858 0x00002f1e 0x00000000 JIT(0x1fe1635c040)..strtab
+  0x000000000000001a regular                                                         ---  0x000d76a8 0x0000011c 0x00000000 JIT(0x1fe1635c040)..shstrtab
+(lldb) quit

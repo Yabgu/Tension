@@ -1,0 +1,52 @@
+(lldb) target create "C:\\work\\Tension\\tension-core\\target\\release\\tension-core.exe"
+Current executable set to 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64).
+(lldb) settings set -- target.run-args  "--debug" "--symbol-path" "C:\\work\\Tension\\examples\\io" "C:\\work\\Tension\\examples\\io\\build\\game.wasm"
+(lldb) command source -s 0 'C:\Users\abdurrahim\AppData\Local\Temp\w2-h\cmds.txt'
+Executing commands in 'C:\Users\abdurrahim\AppData\Local\Temp\w2-h\cmds.txt'.
+(lldb) settings set plugin.jit-loader.gdb.enable on
+(lldb) breakpoint set -n "game/_start_game"
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) run
+[tension-core] debug: guest C:\work\Tension\examples\io\build\game.wasm
+[tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is
+[tension-core] debug:   source map: ./game.wasm.map (found)
+[tension-core] debug:   symbol path: C:\work\Tension\examples\io
+[tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on
+[tension-core] debug:   lldb: settings set target.debug-file-search-paths C:\work\Tension\examples\io
+[tension-core] debug:   lldb: image list                     # guest is JIT(0x...)
+[tension-core] debug:   lldb: breakpoint set -f game.ts -l <line>   # source line
+[tension-core] debug:   lldb: breakpoint set -r 'game/'   # or by function name
+2026-11-21T20:03:09.757Z INFO  core: debug: guest already carries DWARF; leaving it alone
+2026-11-21T20:03:09.821Z INFO  core: async backend: promise (no stack switching on this target)
+2026-11-21T20:03:09.822Z INFO  core: res: writing under \\?\C:\work
+1 location added to breakpoint 1
+(lldb) === TensionCore demo game ===
+Process 24700 launched: 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64)
+Process 24700 stopped
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x0000027efa639fd2 JIT(0x27efa71d040)`game/_start_game at game.ts:11:8
+   8   	
+   9   	export function _start_game(): void {
+   10  	  print("=== TensionCore demo game ===");
+-> 11  	  print("Arguments passed to the game:");
+    	       ^
+   12  	
+   13  	  let n = argCount();
+   14  	  print("  count = " + n.toString());
+(lldb) script exec(open(r'C:\Users\abdurrahim\AppData\Local\Temp\w2-probe3.py').read())
+      Address: JIT(0x27efa71d040)[0x0000027efa639f20] (JIT(0x27efa71d040).PT_LOAD[0]..text + 36640)
+      Summary: JIT(0x27efa71d040)`game/_start_game at game.ts:10:8
+      Address: JIT(0x27efa71d040)[0x0000027efa639fcd] (JIT(0x27efa71d040).PT_LOAD[0]..text + 36813)
+      Summary: JIT(0x27efa71d040)`game/_start_game + 173 at game.ts:10:2
+      Address: JIT(0x27efa71d040)[0x0000027efa639fd2] (JIT(0x27efa71d040).PT_LOAD[0]..text + 36818)
+      Summary: JIT(0x27efa71d040)`game/_start_game + 178 at game.ts:11:8
+      Address: JIT(0x27efa71d040)[0x0000027efa639ffe] (JIT(0x27efa71d040).PT_LOAD[0]..text + 36862)
+      Summary: JIT(0x27efa71d040)`game/_start_game + 222 at game.ts:14:23
+      Address: JIT(0x27efa71d040)[0x0000027efa63a09c] (JIT(0x27efa71d040).PT_LOAD[0]..text + 37020)
+      Summary: JIT(0x27efa71d040)`game/_start_game + 380 at game.ts:22:13
+1 match found in JIT(0x27efa71d040):
+        Address: JIT(0x27efa71d040)[0x0000027efa639f20] (JIT(0x27efa71d040).PT_LOAD[0]..text + 36640)
+        Summary: JIT(0x27efa71d040)`game/_start_game at game.ts:10:8
+@@JSON {"entry": {"pc_hex": "0x27efa639fd2", "function": "game/_start_game", "file": "game.ts", "line": 11, "column": 8, "reason": 3}, "rows": [], "lookups": [{"requested_row": {"addr_hex": "0x27efa639f20", "line": 10, "column": 8}, "lldb_symbol": null, "lldb_line_entry_file": "game.ts", "lldb_line_entry_line": 10, "lldb_line_entry_column": 8}, {"requested_row": {"addr_hex": "0x27efa639fcd", "line": 10, "column": 2}, "lldb_symbol": null, "lldb_line_entry_file": "game.ts", "lldb_line_entry_line": 10, "lldb_line_entry_column": 2}, {"requested_row": {"addr_hex": "0x27efa639fd2", "line": 11, "column": 8}, "lldb_symbol": null, "lldb_line_entry_file": "game.ts", "lldb_line_entry_line": 11, "lldb_line_entry_column": 8}, {"requested_row": {"addr_hex": "0x27efa639ffe", "line": 14, "column": 23}, "lldb_symbol": null, "lldb_line_entry_file": "game.ts", "lldb_line_entry_line": 14, "lldb_line_entry_column": 23}, {"requested_row": {"addr_hex": "0x27efa63a09c", "line": 22, "column": 13}, "lldb_symbol": null, "lldb_line_entry_file": "game.ts", "lldb_line_entry_line": 22, "lldb_line_entry_column": 13}], "row_count_game_ts": 37}
+(lldb) quit
