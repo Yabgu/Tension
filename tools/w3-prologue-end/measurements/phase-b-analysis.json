@@ -1,0 +1,1689 @@
+{
+  "rule": "requested row is the first row of its sequence -> lldb stops at the first row of that sequence carrying a different source line; otherwise -> the requested row. A sequence whose rows are all one line does not slide.",
+  "countedCases": 29,
+  "obey": 21,
+  "violations": 8,
+  "noRowCases": 1,
+  "table": [
+    {
+      "module": "io",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 10,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 62,
+          "indexInSequence": 0,
+          "of": 50,
+          "address": "0x227e",
+          "column": 8
+        },
+        {
+          "sequence": 62,
+          "indexInSequence": 1,
+          "of": 50,
+          "address": "0x2282",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x227e",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 11,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "slid to next row (line 11)",
+      "stoppedLine": 11,
+      "ownFileRowCount": 48,
+      "holds": "holds (predicted line 11)"
+    },
+    {
+      "module": "io",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 14,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 62,
+          "indexInSequence": 6,
+          "of": 50,
+          "address": "0x2290",
+          "column": 8
+        },
+        {
+          "sequence": 62,
+          "indexInSequence": 7,
+          "of": 50,
+          "address": "0x2294",
+          "column": 23
+        },
+        {
+          "sequence": 62,
+          "indexInSequence": 9,
+          "of": 50,
+          "address": "0x2298",
+          "column": 23
+        },
+        {
+          "sequence": 62,
+          "indexInSequence": 10,
+          "of": 50,
+          "address": "0x22a6",
+          "column": 8
+        },
+        {
+          "sequence": 62,
+          "indexInSequence": 11,
+          "of": 50,
+          "address": "0x22b5",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x2290",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 14,
+      "predictionWhy": "row 6 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 14,
+      "ownFileRowCount": 48,
+      "holds": "holds"
+    },
+    {
+      "module": "log",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 32,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 69,
+          "indexInSequence": 0,
+          "of": 41,
+          "address": "0x2a7c",
+          "column": 26
+        },
+        {
+          "sequence": 69,
+          "indexInSequence": 1,
+          "of": 41,
+          "address": "0x2a80",
+          "column": 15
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x2a7c",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 33,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "slid to next row (line 33)",
+      "stoppedLine": 33,
+      "ownFileRowCount": 41,
+      "holds": "holds (predicted line 33)"
+    },
+    {
+      "module": "log",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 35,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 69,
+          "indexInSequence": 4,
+          "of": 41,
+          "address": "0x2a97",
+          "column": 2
+        },
+        {
+          "sequence": 69,
+          "indexInSequence": 5,
+          "of": 41,
+          "address": "0x2aa5",
+          "column": 12
+        },
+        {
+          "sequence": 69,
+          "indexInSequence": 6,
+          "of": 41,
+          "address": "0x2aa9",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x2a97",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 35,
+      "predictionWhy": "row 4 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 35,
+      "ownFileRowCount": 41,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/compute",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 42,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 55,
+          "indexInSequence": 1,
+          "of": 13,
+          "address": "0x3438",
+          "column": 19
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 2,
+          "of": 13,
+          "address": "0x343b",
+          "column": 26
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 3,
+          "of": 13,
+          "address": "0x343d",
+          "column": 19
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 4,
+          "of": 13,
+          "address": "0x343e",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x3438",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 42,
+      "predictionWhy": "row 1 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 42,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/compute",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 43,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 55,
+          "indexInSequence": 5,
+          "of": 13,
+          "address": "0x3442",
+          "column": 2
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 6,
+          "of": 13,
+          "address": "0x3449",
+          "column": 9
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 7,
+          "of": 13,
+          "address": "0x344b",
+          "column": 17
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 8,
+          "of": 13,
+          "address": "0x344d",
+          "column": 9
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 9,
+          "of": 13,
+          "address": "0x344e",
+          "column": 2
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 10,
+          "of": 13,
+          "address": "0x3452",
+          "column": 2
+        },
+        {
+          "sequence": 55,
+          "indexInSequence": 11,
+          "of": 13,
+          "address": "0x3459",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x3442",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 43,
+      "predictionWhy": "row 5 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 43,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/pipeline",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 48,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 54,
+          "indexInSequence": 0,
+          "of": 66,
+          "address": "0x318a",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 1,
+          "of": 66,
+          "address": "0x3196",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 4,
+          "of": 66,
+          "address": "0x31a8",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 5,
+          "of": 66,
+          "address": "0x31b4",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 6,
+          "of": 66,
+          "address": "0x31b9",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 7,
+          "of": 66,
+          "address": "0x31be",
+          "column": 21
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 8,
+          "of": 66,
+          "address": "0x31cb",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 9,
+          "of": 66,
+          "address": "0x31e7",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 10,
+          "of": 66,
+          "address": "0x31f0",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 11,
+          "of": 66,
+          "address": "0x31f7",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 12,
+          "of": 66,
+          "address": "0x31fe",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 13,
+          "of": 66,
+          "address": "0x320b",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 14,
+          "of": 66,
+          "address": "0x3212",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 15,
+          "of": 66,
+          "address": "0x321b",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 18,
+          "of": 66,
+          "address": "0x3230",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 19,
+          "of": 66,
+          "address": "0x3237",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 20,
+          "of": 66,
+          "address": "0x323e",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 21,
+          "of": 66,
+          "address": "0x324d",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 22,
+          "of": 66,
+          "address": "0x3255",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 23,
+          "of": 66,
+          "address": "0x3261",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 24,
+          "of": 66,
+          "address": "0x3268",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 25,
+          "of": 66,
+          "address": "0x326f",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 26,
+          "of": 66,
+          "address": "0x3276",
+          "column": 15
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 27,
+          "of": 66,
+          "address": "0x327d",
+          "column": 15
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 28,
+          "of": 66,
+          "address": "0x3282",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 39,
+          "of": 66,
+          "address": "0x32ef",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 40,
+          "of": 66,
+          "address": "0x32f8",
+          "column": 6
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x318a",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 49,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "slid elsewhere (line 49)",
+      "stoppedLine": 49,
+      "ownFileRowCount": 231,
+      "holds": "holds (predicted line 49)"
+    },
+    {
+      "module": "async-io",
+      "function": "game/pipeline",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 50,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 54,
+          "indexInSequence": 54,
+          "of": 66,
+          "address": "0x3364",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 55,
+          "of": 66,
+          "address": "0x336e",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 56,
+          "of": 66,
+          "address": "0x3373",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 57,
+          "of": 66,
+          "address": "0x337a",
+          "column": 9
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 58,
+          "of": 66,
+          "address": "0x337c",
+          "column": 13
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 59,
+          "of": 66,
+          "address": "0x337e",
+          "column": 9
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 60,
+          "of": 66,
+          "address": "0x337f",
+          "column": 17
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 61,
+          "of": 66,
+          "address": "0x3381",
+          "column": 9
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 62,
+          "of": 66,
+          "address": "0x3382",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 63,
+          "of": 66,
+          "address": "0x3386",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 64,
+          "of": 66,
+          "address": "0x338d",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x3364",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 50,
+      "predictionWhy": "row 54 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 50,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/run",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 60,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 53,
+          "indexInSequence": 0,
+          "of": 108,
+          "address": "0x2c9b",
+          "column": 6
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 1,
+          "of": 108,
+          "address": "0x2ca7",
+          "column": 6
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 2,
+          "of": 108,
+          "address": "0x2cab",
+          "column": 6
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 3,
+          "of": 108,
+          "address": "0x2cb5",
+          "column": 6
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 4,
+          "of": 108,
+          "address": "0x2cb8",
+          "column": 20
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 5,
+          "of": 108,
+          "address": "0x2cba",
+          "column": 6
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 63,
+          "of": 108,
+          "address": "0x3001",
+          "column": 6
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 64,
+          "of": 108,
+          "address": "0x300a",
+          "column": 6
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x2c9b",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 62,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "slid elsewhere (line 62)",
+      "stoppedLine": 62,
+      "ownFileRowCount": 231,
+      "holds": "holds (predicted line 62)"
+    },
+    {
+      "module": "async-io",
+      "function": "game/run",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 62,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 53,
+          "indexInSequence": 6,
+          "of": 108,
+          "address": "0x2cbc",
+          "column": 8
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 7,
+          "of": 108,
+          "address": "0x2cc1",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x2cbc",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 62,
+      "predictionWhy": "row 6 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 62,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 96,
+      "dwarfdRowForLine": [],
+      "isFirstRowOfSequence": null,
+      "entryRow": null,
+      "entryRowIsFirstOfSequence": null,
+      "predictedTargetLine": null,
+      "predictionWhy": null,
+      "observedVerdict": "slid elsewhere (line 98)",
+      "stoppedLine": 98,
+      "ownFileRowCount": 231,
+      "holds": "n/a (no row for this line)"
+    },
+    {
+      "module": "async-io",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 98,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 73,
+          "indexInSequence": 21,
+          "of": 104,
+          "address": "0x5478",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x5478",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 98,
+      "predictionWhy": "row 21 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 98,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/base",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 54,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 88,
+          "indexInSequence": 0,
+          "of": 18,
+          "address": "0x3b0c",
+          "column": 2
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 1,
+          "of": 18,
+          "address": "0x3b0f",
+          "column": 15
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 2,
+          "of": 18,
+          "address": "0x3b12",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x3b0c",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 55,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/base",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 55,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 88,
+          "indexInSequence": 3,
+          "of": 18,
+          "address": "0x3b15",
+          "column": 8
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 4,
+          "of": 18,
+          "address": "0x3b19",
+          "column": 40
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 6,
+          "of": 18,
+          "address": "0x3b1e",
+          "column": 40
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 7,
+          "of": 18,
+          "address": "0x3b2d",
+          "column": 8
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 8,
+          "of": 18,
+          "address": "0x3b3c",
+          "column": 63
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 9,
+          "of": 18,
+          "address": "0x3b40",
+          "column": 8
+        },
+        {
+          "sequence": 88,
+          "indexInSequence": 10,
+          "of": 18,
+          "address": "0x3b4f",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x3b15",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 55,
+      "predictionWhy": "row 3 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/mid",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 60,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 96,
+          "indexInSequence": 4,
+          "of": 56,
+          "address": "0x43e4",
+          "column": 2
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 5,
+          "of": 56,
+          "address": "0x43f2",
+          "column": 2
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 6,
+          "of": 56,
+          "address": "0x43fd",
+          "column": 15
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 7,
+          "of": 56,
+          "address": "0x4400",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x43e4",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 60,
+      "predictionWhy": "row 4 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/mid",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 61,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 96,
+          "indexInSequence": 8,
+          "of": 56,
+          "address": "0x4403",
+          "column": 8
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 9,
+          "of": 56,
+          "address": "0x4407",
+          "column": 30
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 11,
+          "of": 56,
+          "address": "0x440b",
+          "column": 30
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 12,
+          "of": 56,
+          "address": "0x441a",
+          "column": 8
+        },
+        {
+          "sequence": 96,
+          "indexInSequence": 13,
+          "of": 56,
+          "address": "0x4429",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x4403",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 61,
+      "predictionWhy": "row 8 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/outer",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 69,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 98,
+          "indexInSequence": 4,
+          "of": 57,
+          "address": "0x470c",
+          "column": 2
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 5,
+          "of": 57,
+          "address": "0x471a",
+          "column": 2
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 6,
+          "of": 57,
+          "address": "0x4725",
+          "column": 15
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 7,
+          "of": 57,
+          "address": "0x4728",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x470c",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 69,
+      "predictionWhy": "row 4 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/outer",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 70,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 98,
+          "indexInSequence": 8,
+          "of": 57,
+          "address": "0x472b",
+          "column": 8
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 9,
+          "of": 57,
+          "address": "0x472f",
+          "column": 32
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 11,
+          "of": 57,
+          "address": "0x4733",
+          "column": 32
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 12,
+          "of": 57,
+          "address": "0x4742",
+          "column": 8
+        },
+        {
+          "sequence": 98,
+          "indexInSequence": 13,
+          "of": 57,
+          "address": "0x4751",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x472b",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 70,
+      "predictionWhy": "row 8 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/main",
+      "file": "game.ts",
+      "label": "first",
+      "requestedLine": 77,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 100,
+          "indexInSequence": 8,
+          "of": 179,
+          "address": "0x4a52",
+          "column": 2
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 9,
+          "of": 179,
+          "address": "0x4a60",
+          "column": 2
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 10,
+          "of": 179,
+          "address": "0x4a67",
+          "column": 8
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 11,
+          "of": 179,
+          "address": "0x4a6b",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x4a52",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 77,
+      "predictionWhy": "row 8 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/main",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 86,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 100,
+          "indexInSequence": 66,
+          "of": 179,
+          "address": "0x4c4b",
+          "column": 8
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 67,
+          "of": 179,
+          "address": "0x4c4f",
+          "column": 41
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 69,
+          "of": 179,
+          "address": "0x4c53",
+          "column": 41
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 70,
+          "of": 179,
+          "address": "0x4c62",
+          "column": 8
+        },
+        {
+          "sequence": 100,
+          "indexInSequence": 71,
+          "of": 179,
+          "address": "0x4c71",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x4c4b",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 86,
+      "predictionWhy": "row 66 of its sequence (not the first) -> no slide",
+      "observedVerdict": "no stop",
+      "stoppedLine": null,
+      "ownFileRowCount": 421,
+      "holds": "VIOLATION (no stop)"
+    },
+    {
+      "module": "async-io",
+      "function": "game/_game_running",
+      "file": "game.ts",
+      "label": "single-row",
+      "requestedLine": 89,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 74,
+          "indexInSequence": 0,
+          "of": 2,
+          "address": "0x56d1",
+          "column": 9
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x56d1",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 89,
+      "predictionWhy": "first row of sequence, and every following row names the same line -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 89,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "io",
+      "function": "game/_start_game",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 22,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 62,
+          "indexInSequence": 36,
+          "of": 50,
+          "address": "0x234f",
+          "column": 13
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x234f",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 22,
+      "predictionWhy": "row 36 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 22,
+      "ownFileRowCount": 48,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/run",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 67,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 53,
+          "indexInSequence": 27,
+          "of": 108,
+          "address": "0x2e95",
+          "column": 41
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 28,
+          "of": 108,
+          "address": "0x2e9c",
+          "column": 41
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 29,
+          "of": 108,
+          "address": "0x2eac",
+          "column": 41
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 30,
+          "of": 108,
+          "address": "0x2eb7",
+          "column": 8
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 31,
+          "of": 108,
+          "address": "0x2ebe",
+          "column": 8
+        },
+        {
+          "sequence": 53,
+          "indexInSequence": 32,
+          "of": 108,
+          "address": "0x2ecb",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x2e95",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 67,
+      "predictionWhy": "row 27 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 67,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "async-io",
+      "function": "game/pipeline",
+      "file": "game.ts",
+      "label": "nonfirst",
+      "requestedLine": 49,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 54,
+          "indexInSequence": 2,
+          "of": 66,
+          "address": "0x319a",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 3,
+          "of": 66,
+          "address": "0x31a4",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 16,
+          "of": 66,
+          "address": "0x3222",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 17,
+          "of": 66,
+          "address": "0x3229",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 29,
+          "of": 66,
+          "address": "0x3287",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 30,
+          "of": 66,
+          "address": "0x3291",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 31,
+          "of": 66,
+          "address": "0x3296",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 32,
+          "of": 66,
+          "address": "0x329b",
+          "column": 21
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 33,
+          "of": 66,
+          "address": "0x32a8",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 34,
+          "of": 66,
+          "address": "0x32c4",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 35,
+          "of": 66,
+          "address": "0x32cd",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 36,
+          "of": 66,
+          "address": "0x32d4",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 37,
+          "of": 66,
+          "address": "0x32db",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 38,
+          "of": 66,
+          "address": "0x32e8",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 41,
+          "of": 66,
+          "address": "0x32ff",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 42,
+          "of": 66,
+          "address": "0x3306",
+          "column": 6
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 43,
+          "of": 66,
+          "address": "0x330d",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 44,
+          "of": 66,
+          "address": "0x3314",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 45,
+          "of": 66,
+          "address": "0x331b",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 46,
+          "of": 66,
+          "address": "0x332a",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 47,
+          "of": 66,
+          "address": "0x3332",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 48,
+          "of": 66,
+          "address": "0x333e",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 49,
+          "of": 66,
+          "address": "0x3345",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 50,
+          "of": 66,
+          "address": "0x334c",
+          "column": 2
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 51,
+          "of": 66,
+          "address": "0x3353",
+          "column": 15
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 52,
+          "of": 66,
+          "address": "0x335a",
+          "column": 15
+        },
+        {
+          "sequence": 54,
+          "indexInSequence": 53,
+          "of": 66,
+          "address": "0x335f",
+          "column": 6
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x319a",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 49,
+      "predictionWhy": "row 2 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 49,
+      "ownFileRowCount": 231,
+      "holds": "holds"
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/print",
+      "file": "io.ts",
+      "label": "first",
+      "requestedLine": 73,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 57,
+          "indexInSequence": 0,
+          "of": 5,
+          "address": "0x205a",
+          "column": 8
+        },
+        {
+          "sequence": 57,
+          "indexInSequence": 1,
+          "of": 5,
+          "address": "0x2068",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x205a",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 74,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "slid to next row (line 74)",
+      "stoppedLine": 74,
+      "ownFileRowCount": 87,
+      "holds": "holds (predicted line 74)"
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/print",
+      "file": "io.ts",
+      "label": "nonfirst",
+      "requestedLine": 74,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 57,
+          "indexInSequence": 2,
+          "of": 5,
+          "address": "0x206b",
+          "column": 8
+        },
+        {
+          "sequence": 57,
+          "indexInSequence": 3,
+          "of": 5,
+          "address": "0x206f",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x206b",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 74,
+      "predictionWhy": "row 2 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 74,
+      "ownFileRowCount": 87,
+      "holds": "holds"
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/argCount",
+      "file": "io.ts",
+      "label": "first",
+      "requestedLine": 96,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 42,
+          "indexInSequence": 0,
+          "of": 3,
+          "address": "0x12b6",
+          "column": 9
+        },
+        {
+          "sequence": 42,
+          "indexInSequence": 1,
+          "of": 3,
+          "address": "0x12b8",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x12b6",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 96,
+      "predictionWhy": "first row of sequence, and every following row names the same line -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 96,
+      "ownFileRowCount": 87,
+      "holds": "holds"
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/arg",
+      "file": "io.ts",
+      "label": "first",
+      "requestedLine": 101,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 78,
+          "indexInSequence": 0,
+          "of": 34,
+          "address": "0x2c8d",
+          "column": 23
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 1,
+          "of": 34,
+          "address": "0x2c8f",
+          "column": 26
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 2,
+          "of": 34,
+          "address": "0x2c91",
+          "column": 29
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 3,
+          "of": 34,
+          "address": "0x2c93",
+          "column": 15
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 4,
+          "of": 34,
+          "address": "0x2c95",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x2c8d",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 102,
+      "predictionWhy": "first row of sequence; the first following row with a different line is the slide target",
+      "observedVerdict": "slid to next row (line 102)",
+      "stoppedLine": 102,
+      "ownFileRowCount": 87,
+      "holds": "holds (predicted line 102)"
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/arg",
+      "file": "io.ts",
+      "label": "nonfirst",
+      "requestedLine": 102,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 78,
+          "indexInSequence": 5,
+          "of": 34,
+          "address": "0x2c97",
+          "column": 6
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 6,
+          "of": 34,
+          "address": "0x2c99",
+          "column": 13
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 7,
+          "of": 34,
+          "address": "0x2c9b",
+          "column": 6
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 8,
+          "of": 34,
+          "address": "0x2c9c",
+          "column": 2
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 9,
+          "of": 34,
+          "address": "0x2c9e",
+          "column": 23
+        },
+        {
+          "sequence": 78,
+          "indexInSequence": 10,
+          "of": 34,
+          "address": "0x2caf",
+          "column": 16
+        }
+      ],
+      "isFirstRowOfSequence": false,
+      "entryRow": "0x2c97",
+      "entryRowIsFirstOfSequence": false,
+      "predictedTargetLine": 102,
+      "predictionWhy": "row 5 of its sequence (not the first) -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 102,
+      "ownFileRowCount": 87,
+      "holds": "holds"
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/argCount",
+      "file": "io.ts",
+      "label": "first",
+      "requestedLine": 96,
+      "dwarfdRowForLine": [
+        {
+          "sequence": 42,
+          "indexInSequence": 0,
+          "of": 3,
+          "address": "0x12b6",
+          "column": 9
+        },
+        {
+          "sequence": 42,
+          "indexInSequence": 1,
+          "of": 3,
+          "address": "0x12b8",
+          "column": 2
+        }
+      ],
+      "isFirstRowOfSequence": true,
+      "entryRow": "0x12b6",
+      "entryRowIsFirstOfSequence": true,
+      "predictedTargetLine": 96,
+      "predictionWhy": "first row of sequence, and every following row names the same line -> no slide",
+      "observedVerdict": "exact",
+      "stoppedLine": 96,
+      "ownFileRowCount": 87,
+      "holds": "holds"
+    }
+  ]
+}

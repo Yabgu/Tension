@@ -1,0 +1,10 @@
+# async-io game.wasm, .debug_line rows 3262-3268 (0-based index), as phase-a-line.mjs emits them:
+# address line column fileIndex isa discriminator opIndex flags
+# _game_running is a one-row sequence: one row plus its end_sequence terminator at the same address.
+0x00000000000056a3 103 4 61 0 0 0 is_stmt
+0x00000000000056a5 104 15 61 0 0 0 is_stmt
+0x00000000000056a7 104 4 61 0 0 0 is_stmt
+0x00000000000056b0 105 4 61 0 0 0 is_stmt
+0x00000000000056b0 105 4 61 0 0 0 is_stmt end_sequence
+0x00000000000056d1 89 9 61 0 0 0 is_stmt
+0x00000000000056d1 89 9 61 0 0 0 is_stmt end_sequence
