@@ -3,7 +3,7 @@
 //
 // Three steps per fixture (`docs/build.md` §6):
 //
-//   1. the generator derives layout.ts and the asc flags from session.json, with
+//   1. the generator derives layout.ten and the asc flags from session.json, with
 //      the layout hash `tension-core layout-hash` prints — a disagreement stops
 //      the build instead of shipping a guest the host will refuse;
 //   2. `tensionscript` compiles each fixture with those flags;
@@ -76,8 +76,8 @@ if (!stub || !existsSync(stub)) {
 // is a truncated file — identical content is still not atomic. Run this script
 // on its own and the generation happens here, as it always did.
 if (process.env.TENSION_SESSION_READY === '1') {
-  if (!existsSync(join(framework, 'assembly', 'runtime', 'layout.ts'))) {
-    fail(RUNNER, 'TENSION_SESSION_READY is set but layout.ts is missing — ' +
+  if (!existsSync(join(framework, 'assembly', 'runtime', 'layout.ten'))) {
+    fail(RUNNER, 'TENSION_SESSION_READY is set but layout.ten is missing — ' +
                  'the runner did not generate it');
   }
   console.log('==> using the session constants the runner generated');
@@ -453,42 +453,42 @@ function runHostLoopFixture({ entry, out, marker, args = [], reason, alternative
 
 // ── the fixtures ────────────────────────────────────────────────────────────
 
-runFixture('guest-open.ts', 'guest-open.wasm');
+runFixture('guest-open.ten', 'guest-open.wasm');
 
 // The drift check's three cells, each a real guest run against the real host.
-runFixture('guest-drift-refuse.ts', 'guest-drift-refuse.wasm');
-runFixture('guest-drift-partial.ts', 'guest-drift-partial.wasm');
-runRefusalFixture('guest-drift-fixed.ts', 'guest-drift-fixed.wasm',
+runFixture('guest-drift-refuse.ten', 'guest-drift-refuse.wasm');
+runFixture('guest-drift-partial.ten', 'guest-drift-partial.wasm');
+runRefusalFixture('guest-drift-fixed.ten', 'guest-drift-fixed.wasm',
                   { message: DRIFT_MESSAGE, what: 'the drift check', session: true });
 
-runFixture('guest-ogre.ts', 'guest-ogre.wasm', ['--capability', stub]);
+runFixture('guest-ogre.ten', 'guest-ogre.wasm', ['--capability', stub]);
 // Gate Zero: the buffer wrappers hold across a collection, and their address is
 // the data rather than the object. No canvas, no display — the property is the
 // wrapper's. See the fixture's header for the trap this exists to keep buried.
-runFixture('guest-buffers.ts', 'guest-buffers.wasm');
+runFixture('guest-buffers.ten', 'guest-buffers.wasm');
 
 // The scene's packing contract: retention, culling, ordering, the budget. No
 // canvas and no GPU — `Scene` is a data structure and `pack()` is the whole of
 // what this asserts. The pixel suites cover the bytes it produces.
-runFixture('guest-scene.ts', 'guest-scene.wasm');
+runFixture('guest-scene.ten', 'guest-scene.wasm');
 const inputLib = findInput();
 if (!inputLib) {
   fail(RUNNER, 'guest-ui: no tension::input DSO — build it with\n' +
                '        npm run build:input (or set TENSION_INPUT_LIB)');
 }
-runFixture('guest-ui.ts', 'guest-ui.wasm', ['--capability', inputLib]);
-runFontSpecimenFixture('guest-font-specimen.ts', 'guest-font-specimen.wasm');
-runFixture('guest-editor.ts', 'guest-editor.wasm');
-runMountFixture('guest-resmount.ts', 'guest-resmount.wasm');
-runWriteRootFixture('guest-wres.ts', 'guest-wres.wasm');
-runFixture('guest-verlet.ts', 'guest-verlet.wasm');
-runFixture('guest-physics-units.ts', 'guest-physics-units.wasm');
+runFixture('guest-ui.ten', 'guest-ui.wasm', ['--capability', inputLib]);
+runFontSpecimenFixture('guest-font-specimen.ten', 'guest-font-specimen.wasm');
+runFixture('guest-editor.ten', 'guest-editor.wasm');
+runMountFixture('guest-resmount.ten', 'guest-resmount.wasm');
+runWriteRootFixture('guest-wres.ten', 'guest-wres.wasm');
+runFixture('guest-verlet.ten', 'guest-verlet.wasm');
+runFixture('guest-physics-units.ten', 'guest-physics-units.wasm');
 
-runPlainFixture('guest-anim-parser.ts', 'guest-anim-parser.wasm');
-runPlainFixture('guest-anim-eval.ts', 'guest-anim-eval.wasm');
-runPlainFixture('guest-log.ts', 'guest-log.wasm');
-runPlainFixture('guest-callbacks.ts', 'guest-callbacks.wasm');
-runRefusalFixture('guest-callbacks-guard.ts', 'guest-callbacks-guard.wasm',
+runPlainFixture('guest-anim-parser.ten', 'guest-anim-parser.wasm');
+runPlainFixture('guest-anim-eval.ten', 'guest-anim-eval.wasm');
+runPlainFixture('guest-log.ten', 'guest-log.wasm');
+runPlainFixture('guest-callbacks.ten', 'guest-callbacks.wasm');
+runRefusalFixture('guest-callbacks-guard.ten', 'guest-callbacks-guard.wasm',
                   { message: GUARD_MESSAGE, what: 'the guard', session: false });
 
 // ── the AI stream's controls ────────────────────────────────────────────────
@@ -520,9 +520,9 @@ function runAiFixture(mode = '', env = {}) {
   console.log(`    == guest-ai-stream${mode ? ` (${mode})` : ''}: OK`);
 }
 
-console.log('==> compiling guest-ai-stream.ts');
+console.log('==> compiling guest-ai-stream.ten');
 {
-  const compiled = compile('guest-ai-stream.ts', 'guest-ai-stream.wasm');
+  const compiled = compile('guest-ai-stream.ten', 'guest-ai-stream.wasm');
   if (compiled.status === 0) {
     runAiFixture();
     runAiFixture('stall', { TENSION_AI_STUB_STALL_MS: '50' });
@@ -541,7 +541,7 @@ console.log('==> compiling guest-ai-stream.ts');
 // parks, the host matches `(family, key)` to the task id, and `__taskWake`
 // resumes it, with no `__taskTick` call from the guest.
 runHostLoopFixture({
-  entry: 'guest-push.ts', out: 'guest-push.wasm',
+  entry: 'guest-push.ten', out: 'guest-push.wasm',
   marker: 'PUSH resumed with 2', args: ['--post-test-events'],
   reason: 'the installed tensionscript has no push-path std (needs >= 0.6.1)',
 });
@@ -551,7 +551,7 @@ runHostLoopFixture({
 // guest stops itself after three frames, so a loop that fails to wake it shows up
 // as a marker mismatch, not a hang.
 runHostLoopFixture({
-  entry: 'guest-frame.ts', out: 'guest-frame.wasm',
+  entry: 'guest-frame.ten', out: 'guest-frame.wasm',
   marker: 'FRAME loop finished after 3 frames',
   reason: 'the installed tensionscript has no push-path std (needs >= 0.6.1)',
 });
@@ -561,7 +561,7 @@ runHostLoopFixture({
 // wants was published with nobody waiting. It must still be there when the park
 // arrives.
 runHostLoopFixture({
-  entry: 'guest-early.ts', out: 'guest-early.wasm',
+  entry: 'guest-early.ten', out: 'guest-early.wasm',
   marker: 'EARLY resumed with 6', args: ['--post-test-events'],
   reason: 'the installed tensionscript has no __taskResume (needs >= 0.6.1)',
 });
@@ -569,7 +569,7 @@ runHostLoopFixture({
 // The synchronous async function: a task that never parks. A four-slot table
 // against twelve tasks is what makes a leaked slot visible.
 runHostLoopFixture({
-  entry: 'guest-sync.ts', out: 'guest-sync.wasm',
+  entry: 'guest-sync.ten', out: 'guest-sync.wasm',
   marker: 'SYNC 12 synchronous awaits summed 504', args: ['--post-test-events'],
   reason: 'the installed tensionscript has no creation guard (needs >= 0.6.1)',
 });
@@ -578,7 +578,7 @@ runHostLoopFixture({
 // while they do. Capacity bounds *live* tasks, so the third is settled with
 // -ENOSPC before its body runs.
 runHostLoopFixture({
-  entry: 'guest-enospc.ts', out: 'guest-enospc.wasm',
+  entry: 'guest-enospc.ten', out: 'guest-enospc.wasm',
   marker: 'ENOSPC third task settled with -28', args: ['--post-test-events'],
   reason: 'the installed tensionscript has no creation guard (needs >= 0.6.1)',
 });
@@ -587,7 +587,7 @@ runHostLoopFixture({
 // that can go wrong quietly: an instrumented `for` used to append its incrementor
 // to the body, so a native `continue` skipped it and the loop spun forever.
 runHostLoopFixture({
-  entry: 'guest-flow.ts', out: 'guest-flow.wasm',
+  entry: 'guest-flow.ten', out: 'guest-flow.wasm',
   marker: 'FLOW PASS',
   reason: 'the installed tensionscript refuses break/continue in async bodies (needs >= 0.7.1)',
   alternative: /break in an async function body/,
@@ -598,7 +598,7 @@ runHostLoopFixture({
 // to wake it. This is the shape that deadlocked when `wake` filtered on
 // `slot >= 0`.
 runHostLoopFixture({
-  entry: 'guest-chain.ts', out: 'guest-chain.wasm',
+  entry: 'guest-chain.ten', out: 'guest-chain.wasm',
   marker: 'CHAIN outer: got 7',
   reason: 'the installed tensionscript has no push-path std (needs >= 0.6.1)',
 });
@@ -608,7 +608,7 @@ runHostLoopFixture({
 // guest opens a two-slot ring with no callbacks, so the third is dropped by the
 // session, and it parks on exactly that record (job 5).
 runHostLoopFixture({
-  entry: 'guest-drop.ts', out: 'guest-drop.wasm',
+  entry: 'guest-drop.ten', out: 'guest-drop.wasm',
   marker: 'DROP woke with status -5', args: ['--post-test-events'],
   reason: 'the installed tensionscript has no __taskFail (needs >= 0.6.1)',
 });

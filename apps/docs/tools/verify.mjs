@@ -262,7 +262,7 @@ if (!existsSync(transcriptPath)) {
 // Three baked faces (`ui.0.iwi`, `ui.1.iwi`, `ui.2.iwi`), one manifest and the
 // guest's own constants. This section is the *app's* view of that contract: the
 // pages the volume packs, against the manifest that names them, against the file
-// `tension-framework/assembly/ui/fonts.generated.ts` — which is what the guest
+// `tension-framework/assembly/ui/fonts.generated.ten` — which is what the guest
 // actually compiles in. `tools/font/verify-atlas.mjs` checks the bake against its
 // own spec; this checks the copy this app will ship.
 //
@@ -273,7 +273,7 @@ if (!existsSync(transcriptPath)) {
 
 process.stdout.write('\nui pages\n');
 const uiPath = join(assets, 'ui.json');
-const guestFonts = join(repo, 'tension-framework', 'assembly', 'ui', 'fonts.generated.ts');
+const guestFonts = join(repo, 'tension-framework', 'assembly', 'ui', 'fonts.generated.ten');
 if (!existsSync(uiPath)) {
   fail('ui.json does not exist — run scripts/assets.mjs (or `npm run assets`)');
 } else {
@@ -322,11 +322,11 @@ if (!existsSync(uiPath)) {
     }
   }
 
-  // The guest's table, page by page. A stale `fonts.generated.ts` is the failure
+  // The guest's table, page by page. A stale `fonts.generated.ten` is the failure
   // this whole section exists for: it does not throw, it samples the neighbouring
   // cell, which reads as damaged glyphs.
   if (!existsSync(guestFonts)) {
-    fail('tension-framework/assembly/ui/fonts.generated.ts is missing — run the framework bake');
+    fail('tension-framework/assembly/ui/fonts.generated.ten is missing — run the framework bake');
   } else {
     const source = readFileSync(guestFonts, 'utf8');
     const scalar = (name) => {
@@ -341,7 +341,7 @@ if (!existsSync(uiPath)) {
 
     const count = scalar('FONT_PAGE_COUNT');
     if (count !== ui.pages.length) {
-      fail(`fonts.generated.ts declares ${count} page(s), the manifest bakes ${ui.pages.length}`);
+      fail(`fonts.generated.ten declares ${count} page(s), the manifest bakes ${ui.pages.length}`);
     } else {
       ok(`the guest compiles in ${count} page(s), as baked`);
     }
@@ -355,7 +355,7 @@ if (!existsSync(uiPath)) {
     for (const page of ui.pages) {
       const i = page.slot;
       if (!cellsW || !cellsH || !grids || !heights) {
-        fail('fonts.generated.ts no longer declares the per-page arrays this check reads');
+        fail('fonts.generated.ten no longer declares the per-page arrays this check reads');
         break;
       }
       if (cellsW[i] !== page.cell.w || cellsH[i] !== page.cell.h) {
@@ -384,7 +384,7 @@ if (!existsSync(uiPath)) {
     const weights = scalar('FONT_WEIGHTS');
     const glyphs = scalar('FONT_GLYPHS');
     if (!advances) {
-      fail('fonts.generated.ts no longer declares FONT_ADVANCES in the form this check reads');
+      fail('fonts.generated.ten no longer declares FONT_ADVANCES in the form this check reads');
     } else {
       const entries = advances[1].split(',').map((t) => t.trim()).filter(Boolean).length;
       const want = ui.pages.length * (weights ?? 0) * (glyphs ?? 0);

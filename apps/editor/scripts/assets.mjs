@@ -11,7 +11,7 @@
 //      which is 2.3 MB of app that does nothing — and worse, it makes "which atlas
 //      is this app using" a question with two answers.
 //   2. **Bake.** `bake-ttf.mjs` turns real outlines into `assets/ui.N.iwi`, the
-//      `assets/ui.json` manifest and `src/ui-fonts.generated.ts`.
+//      `assets/ui.json` manifest and `src/ui-fonts.generated.ten`.
 //   3. **Verify.** `verify-atlas.mjs` compares the three against each other. A
 //      bake that regenerated two of three does not throw; it produces a guest that
 //      samples cells from a grid it no longer has, which draws neighbouring glyphs
@@ -52,7 +52,7 @@ run('bake', [
   '--faces', FRAMEWORK,
   '--atlas', 'assets',
   '--manifest', 'assets/ui.json',
-  '--ts', 'src/ui-fonts.generated.ts',
+  '--ts', 'src/ui-fonts.generated.ten',
   '--preview', 'assets',
 ]);
 
@@ -60,5 +60,5 @@ run('bake', [
 run('verify', [
   join(FRAMEWORK, 'tools', 'font', 'verify-atlas.mjs'),
   '--manifest', 'assets/ui.json',
-  '--ts', 'src/ui-fonts.generated.ts',
+  '--ts', 'src/ui-fonts.generated.ten',
 ]);

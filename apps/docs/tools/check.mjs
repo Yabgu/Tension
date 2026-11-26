@@ -67,7 +67,7 @@ step('search      (inverted index -> search.bin)', ['tools/search.mjs']);
 // bakes them from the *framework's* spec and faces (a second copy of either is how
 // the two apps end up sampling different grids) and then runs `verify-atlas.mjs`,
 // which is the only check that sees all three artifacts at once.
-step('bake-font   (TTF outlines -> ui.N.iwi + ui.json + ui-fonts.generated.ts)',
+step('bake-font   (TTF outlines -> ui.N.iwi + ui.json + ui-fonts.generated.ten)',
      ['scripts/assets.mjs']);
 step('run-examples(compile + run -> transcripts.bin)', ['tools/run-examples.mjs']);
 

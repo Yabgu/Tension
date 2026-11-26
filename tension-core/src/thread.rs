@@ -215,7 +215,7 @@ impl ParkTable {
     ///
     /// The drop path's accessor (§4.4): a lost signal is attributed to a
     /// *family*, not a record — the producer's count cannot say which stream
-    /// lost it (`pre0`'s note, and `rt.ts`'s rollup) — so the wake names the
+    /// lost it (`pre0`'s note, and the compiler std's `rt.ts` rollup) — so the wake names the
     /// family's parked tasks rather than trying to match a key that never
     /// arrived. Lowest key first only so the order is deterministic in a test.
     pub fn take_upto(&mut self, limit: usize) -> Vec<u64> {

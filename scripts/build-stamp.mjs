@@ -47,8 +47,8 @@ export const INPUT_SETS = {
     ],
     files: [
       'schema/ogre.json',
-      'tension-framework/assembly/ogre/wire.ts',
-      'tension-framework/assembly/ogre/index.ts',
+      'tension-framework/assembly/ogre/wire.ten',
+      'tension-framework/assembly/ogre/index.ten',
       'tension-res/build.zig',
       'tension-res/include/tension_res.h',
     ],

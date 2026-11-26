@@ -16,7 +16,7 @@
 //!     and both end up below y = 0, on the floor, where the wall spring
 //!     carries their weight.
 //!
-//! `collision_rhs` mirrors `examples/solver/collision/game.ts` line for line; the
+//! `collision_rhs` mirrors `examples/solver/collision/game.ten` line for line; the
 //! constants are that file's constants.
 
 use std::sync::Mutex;
@@ -45,7 +45,7 @@ extern "C" {
 /// serialize (the convention every solver test file follows).
 static SERIAL: Mutex<()> = Mutex::new(());
 
-// ── the model (examples/solver/collision/game.ts) ────────────────────────
+// ── the model (examples/solver/collision/game.ten) ────────────────────────
 
 const GRAVITY: f64 = -9.81;
 const K_WALL: f64 = 200.0;

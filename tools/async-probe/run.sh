@@ -20,7 +20,7 @@ SCRIPT=$REPO/scripts/tensionscript.mjs
 export TENSIONSCRIPT=$DIST/bin/tensionscript.js
 
 mkdir -p "$OUT/promise"
-# `promise-main-framework.ts` resolves `tension-framework` the way the example
+# `promise-main-framework.ten` resolves `tension-framework` the way the example
 # does — through a node_modules directory above the source file. Built from a
 # scratch directory with that directory linked in, so no file is added to
 # examples/async-on-main.
@@ -48,13 +48,13 @@ build() { # build <source> <out> [extra flags…]
 }
 
 say "D — Promise builds (no --enable stack-switching), and one stackful control"
-build promise-main-framework.ts main-framework-promise.wasm
-build promise-main-io-only.ts   main-io-promise.wasm
-build promise-main-framework.ts main-framework-stackful.wasm --enable stack-switching
+build promise-main-framework.ten main-framework-promise.wasm
+build promise-main-io-only.ten   main-io-promise.wasm
+build promise-main-framework.ten main-framework-stackful.wasm --enable stack-switching
 
-say "D — the owner's example: game.ts, Promise build vs stackful build"
+say "D — the owner's example: game.ten, Promise build vs stackful build"
 ( cd examples/async-on-main \
-    && node "$SCRIPT" game.ts -o "$OUT/game-promise.wasm" \
+    && node "$SCRIPT" game.ten -o "$OUT/game-promise.wasm" \
          --runtime incremental --target release --exportStart __start ) >/dev/null 2>&1
 
 printf '  Promise build exports:  '

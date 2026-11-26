@@ -238,8 +238,8 @@ function packVolume() {
 // which surfaces as `submitCamera refused` in the example rather than as
 // anything about a build. Say it plainly here instead.
 //
-// Content hash, not mtime — `build:framework` rewrites layout.ts and
-// manifest.ts with identical content on every build, so mtimes are always
+// Content hash, not mtime — `build:framework` rewrites layout.ten and
+// manifest.ten with identical content on every build, so mtimes are always
 // newer than the binaries. scripts/build-stamp.mjs has the detail.
 {
   const check = staleness(repo);

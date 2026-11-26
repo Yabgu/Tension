@@ -10,7 +10,7 @@
 // breakpoint on the first line would have to bind to.
 import fs from 'node:fs';
 
-const [, , infoPath, rowsPath, fileName = 'game.ts'] = process.argv;
+const [, , infoPath, rowsPath, fileName = 'game.ten'] = process.argv;
 
 const infoText = fs.readFileSync(infoPath, 'utf8');
 const rowsRaw = fs.readFileSync(rowsPath, 'utf8').trim().split(/\r?\n/);

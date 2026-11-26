@@ -14,7 +14,7 @@
 //! completed by the success class or the failure class: a job await parks on
 //! `JOB_DONE`'s stamp and is resumed by `JOB_DONE` **or** `JOB_FAILED`. The
 //! guest already resolves this with a family map (`__taskBindFamily`,
-//! `rt.ts:78-86`) and registers under `keyOf(familyOf(class), key)`
+//! `rt.ten:78-86`) and registers under `keyOf(familyOf(class), key)`
 //! (`task-rt.ts:246`). The host must key identically or the two halves disagree
 //! about what a parked task is waiting for — so the tables below are per
 //! **family**, and a delivered class is resolved through `family_of` before the
@@ -70,7 +70,7 @@ pub const ENOSPC: i32 = -28;
 pub const EINVAL: i32 = -22;
 
 /// The family a completion class belongs to. Mirrors the framework's bindings
-/// (`tension-framework/assembly/runtime/rt.ts:78-86`) and the std's
+/// (`tension-framework/assembly/runtime/rt.ten:78-86`) and the std's
 /// `familyOf` fallback: an unbound class is its own family.
 pub fn family_of(class: u32) -> u32 {
     match class {

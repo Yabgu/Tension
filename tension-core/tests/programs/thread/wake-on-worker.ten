@@ -16,7 +16,7 @@
 //   6. main tells the worker to stop and joins it, and the run exits 0 with
 //      nothing stranded (so DL12B's refusal does not fire).
 //
-// It is the same shape as `strand-nested.ts`, with the one difference that makes
+// It is the same shape as `strand-nested.ten`, with the one difference that makes
 // the difference: `--post-completion 4,7` completes the pair that guest's await
 // waits on forever.
 //
@@ -132,7 +132,7 @@ async function workerEntry(): i32 {
   // **The worker tells the session it is done**, which is what makes the run
   // ordered rather than timed: the host loop sees this executor's state word go to
   // 2 and leaves, so `__threadJoin` below returns because the worker exited, not
-  // because a sleep expired. Same shape as `plain-worker.ts`, and the same
+  // because a sleep expired. Same shape as `plain-worker.ten`, and the same
   // meaning: the executor has no more work and says so.
   // Not `__executorExit` here: with a session pool the executor's life outlives
   // its entry, so "my body is done" is not "stop". Main stops it (below) once the

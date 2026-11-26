@@ -23,7 +23,7 @@
 //!
 //! plus `jobResult(job) == the awaited value` and `jobState(job) == JOB_DONE`.
 //!
-//! The guest (`tension-ogre/tests/guest-async.ts`, built by that directory's
+//! The guest (`tension-ogre/tests/guest-async.ten`, built by that directory's
 //! `run.sh`) prints one line per observation and `ASYNC PASS` at the end; any
 //! failed clause prints `ASYNC FAIL: <reason>` and traps, so a wrong value is a
 //! non-zero exit rather than a passing line.
@@ -55,7 +55,7 @@ fn guest() -> Option<PathBuf> {
     }
     support_ci::skip_or_fail(format_args!(
         "async_await: {} is not built — run `tension-ogre/tests/run.sh` (it compiles \
-         guest-async.ts with the framework's session flags and needs a compiler with \
+         guest-async.ten with the framework's session flags and needs a compiler with \
          the Phase 4 std); skipping",
         path.display()
     ));
@@ -76,7 +76,7 @@ fn adapter() -> Option<PathBuf> {
     None
 }
 
-/// The packed fixture volume. `guest-async.ts` loads `resources/models/Barrel.mesh`
+/// The packed fixture volume. `guest-async.ten` loads `resources/models/Barrel.mesh`
 /// out of it, so no mount and no bytes means no job to await.
 fn volume() -> Option<PathBuf> {
     let path = built("fixtures.tns");

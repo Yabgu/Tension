@@ -1,6 +1,6 @@
 {
   "$schema": "../../packages/cli/schema/tension.config.json",
-  "entry": "src/main.ts",
+  "entry": "src/main.ten",
   "renderer": "2d",
   "window": {
     "width": 1600,

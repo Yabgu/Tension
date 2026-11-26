@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "description": "Guest SDK for TensionCore: the capability bindings (tension::io, audio, ai, res, solver, ogre, input, 2d) and the game abstractions built on them",
   "type": "module",
-  "ascMain": "assembly/index.ts",
+  "ascMain": "assembly/index.ten",
   "types": "index.d.ts",
   "scripts": {
-    "build": "node ../scripts/tensionscript.mjs index.ts -o build/index.wasm --runtime incremental --target release --optimizeLevel 3",
+    "build": "node ../scripts/tensionscript.mjs index.ten -o build/index.wasm --runtime incremental --target release --optimizeLevel 3",
     "test": "cd .. && node scripts/test.mjs --framework && cargo test --manifest-path tension-core/Cargo.toml --no-default-features --features audio --test framework_guards",
     "build:fixture": "bash tests/run.sh",
-    "assets:fonts": "node tools/font/bake-ttf.mjs --spec assets/fonts/fonts.json --atlas assets --manifest assets/ui.json --ts assembly/ui/fonts.generated.ts --preview assets/preview",
+    "assets:fonts": "node tools/font/bake-ttf.mjs --spec assets/fonts/fonts.json --atlas assets --manifest assets/ui.json --ts assembly/ui/fonts.generated.ten --preview assets/preview",
     "verify:fonts": "node tools/font/verify-atlas.mjs"
   },
   "exports": {
@@ -21,7 +21,7 @@
     "assembly",
     "assets",
     "tools",
-    "index.ts",
+    "index.ten",
     "index.d.ts"
   ],
   "keywords": [

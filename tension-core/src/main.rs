@@ -1890,7 +1890,7 @@ fn main() -> anyhow::Result<()> {
     }
     if argv.first().map(|a| a == "layout-hash").unwrap_or(false) {
         // The arena's shape hash, for the AS build pipeline: `session.json` and
-        // the generated `layout.ts` carry it, and this is where it comes from
+        // the generated `layout.ten` carry it, and this is where it comes from
         // (`tension-framework/build.sh --hash`, which refuses a disagreement).
         println!("{}", session::arena::layout_hash());
         return Ok(());

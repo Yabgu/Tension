@@ -14,7 +14,7 @@
 //! through untouched, so under `--debug` an ordinary source breakpoint resolves:
 //!
 //! ```text
-//! frame #0: 0x… JIT(0x…)`game/_start_game at game.ts:11:8
+//! frame #0: 0x… JIT(0x…)`game/_start_game at game.ten:11:8
 //! ```
 //!
 //! A guest from an earlier compiler carries only a `name` custom section and,

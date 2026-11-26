@@ -762,7 +762,7 @@ writeFileSync(resolve(process.cwd(), opts.manifest), JSON.stringify(manifest, nu
 
 // ── the guest's table ───────────────────────────────────────────────────────
 //
-// TensionScript has no JSON parser — `apps/docs/src/format.ts` says so and ships
+// TensionScript has no JSON parser — `apps/docs/src/format.ten` says so and ships
 // a 25-line extractor that reads ten integers out of a fixed shape. A 95-entry
 // advance table per weight per page is not ten integers, so the metrics reach
 // the guest as **generated source**: compile-time constants, no parser, no

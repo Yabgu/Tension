@@ -22,7 +22,7 @@
 // would turn this into a test of the stackful path under a Promise-program name.
 //
 // `print` comes from the framework's `io` module and not its barrel: the barrel
-// re-exports `./2d`, whose `scene.ts` contains an `await` in a function this
+// re-exports `./2d`, whose `scene.ten` contains an `await` in a function this
 // program never calls. Importing it would make the program depend on the very
 // reachability-blindness that caused the defect — a useful measurement (round
 // AP1), and a bad thing for a regression test to hinge on.

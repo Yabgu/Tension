@@ -1,5 +1,5 @@
 {
-  "$comment": "The OGRE wire records. One source for both sides: tools/codegen emits tension-framework/assembly/ogre/generated/ogre.generated.ts and tension-ogre/src/generated/ogre.generated.h. Field names are the guest's; the .h emits them snake_case by a documented rule. Alignment follows the wire (f32/u32/i32 align 4, u64 align 8) so offsets are computed, never read from a compiler.",
+  "$comment": "The OGRE wire records. One source for both sides: tools/codegen emits tension-framework/assembly/ogre/generated/ogre.generated.ten and tension-ogre/src/generated/ogre.generated.h. Field names are the guest's; the .h emits them snake_case by a documented rule. Alignment follows the wire (f32/u32/i32 align 4, u64 align 8) so offsets are computed, never read from a compiler.",
   "records": [
     {
       "name": "Vec3fValue",
@@ -670,7 +670,7 @@
         "MAT_HLMS_PBS",
         "MAT_HLMS_UNLIT"
       ],
-      "why": "the static constructors below name these protocol constants; they are behavior, and they stay in wire.ts so the schema describes layout plus construction, not every constant in the catalogue."
+      "why": "the static constructors below name these protocol constants; they are behavior, and they stay in wire.ten so the schema describes layout plus construction, not every constant in the catalogue."
     }
   ]
 }

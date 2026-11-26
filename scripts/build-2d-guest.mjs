@@ -39,7 +39,7 @@ let debug = false;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--example') exampleDir = resolve(argv[++i]);
   // `--debug` also emits a source map, which is what `launch.json` needs: the
-  // map is the only thing that links a wasm instruction back to a `main.ts`
+  // map is the only thing that links a wasm instruction back to a `main.ten`
   // line. Without it a breakpoint in a 2D example lands in wasm.
   else if (argv[i] === '--debug') debug = true;
 }
@@ -128,7 +128,7 @@ if (!existsSync(config)) {
 console.log(`${RUNNER}: config ${relative(repo, config)}`);
 
 mkdirSync(join(exampleDir, 'build'), { recursive: true });
-const entry = join(exampleDir, 'src', 'main.ts');
+const entry = join(exampleDir, 'src', 'main.ten');
 const out = join(exampleDir, 'build', 'game.wasm');
 const compileFlags = debug ? ['--debug', '--sourceMap'] : [];
 const compileForm = spawnForm(compiler, [entry, '--config', config, ...compileFlags, '-o', out]);
@@ -139,7 +139,7 @@ if (!compile || compile.status !== 0) {
   die('the guest did not compile');
 }
 // A `--debug` build is only worth anything if the compiler actually emitted
-// DWARF, so say so rather than let someone set a breakpoint in `main.ts` and
+// DWARF, so say so rather than let someone set a breakpoint in `main.ten` and
 // wonder. Measured: `tensionscript` 0.13.2 emits no `.debug_info` for these
 // guests with the exact flag set that does produce one for `examples/io`, and
 // the cause is not isolated. The flags are correct; the compiler is silent.

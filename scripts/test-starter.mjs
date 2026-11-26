@@ -197,7 +197,7 @@ const frames = Number(summary[1]);
 // than hard-coding 240: a template edit that moves the number is fine, a guest
 // that stops reaching it is not. Falling back to a floor keeps the suite working
 // if the constant is renamed.
-const source = readFileSync(join(dir, 'src', 'main.ts'), 'utf8');
+const source = readFileSync(join(dir, 'src', 'main.ten'), 'utf8');
 const declared = source.match(/HEADLESS_FRAMES\s*:\s*i32\s*=\s*(\d+)/);
 if (declared) {
   if (frames !== Number(declared[1])) {

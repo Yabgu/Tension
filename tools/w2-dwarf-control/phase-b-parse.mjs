@@ -105,7 +105,7 @@ for (let s = 0; s < sequences.length; ++s) {
     const row = seq[i];
     if (!TARGET_LINES.includes(row.line)) continue;
     const name = fileNames.get(row.fileIndex) ?? '';
-    if (name !== 'game.ts') continue;
+    if (name !== 'game.ten') continue;
     const range = rangeAt(row.address);
     findings.push({
       line: row.line,

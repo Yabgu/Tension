@@ -1,7 +1,7 @@
 //! The manifest cross-check (`docs/session.md` §4).
 //!
 //! Three places hold the arena's shape hash: the generated constants the AS
-//! runtime compiles against (`tension-framework/assembly/runtime/layout.ts`),
+//! runtime compiles against (`tension-framework/assembly/runtime/layout.ten`),
 //! the source of truth the generator derives them from
 //! (`tension-framework/session.json`), and this build's own
 //! `arena::layout_hash()`, which `tension-core layout-hash` prints — the same
@@ -13,7 +13,7 @@
 //! `cargo test` rather than in a build script, so it fails in review rather than
 //! in someone's first run.
 //!
-//! The hash is read out of `layout.ts` rather than out of a separate stamp file
+//! The hash is read out of `layout.ten` rather than out of a separate stamp file
 //! on purpose: that is the *source the AS build compiles*, so the check cannot
 //! pass while the guest is built against something else.
 

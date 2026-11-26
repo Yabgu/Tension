@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // examples/2d/synthetic/emit.mjs — turn the synthetic scene into what an example
-// needs: IWI pages on disk and the `scene.generated.ts` its guest compiles.
+// needs: IWI pages on disk and the `scene.generated.ten` its guest compiles.
 //
 // `build.mjs` does this job for the real example by slicing the third-party tileset.
 // There is nothing to slice here, so this is the same output shape from
 // `pages.mjs`'s constants: the same file names, the same `assets/textures/`
 // tree, and a generated scene table with the same export names. That is what
-// lets `examples/2d/isometric/src/main.ts` — unchanged — render the synthetic
+// lets `examples/2d/isometric/src/main.ten` — unchanged — render the synthetic
 // scene: it reads its scene table and nothing else.
 //
 // The page art is placed on each page at local coordinates, and the scene table
@@ -219,7 +219,7 @@ export function emit(exampleDir) {
   for (let i = 0; i < PAGE_COUNT; i++) {
     writeFileSync(join(pageDir(exampleDir), s.pages[i].name), encodeIwiRgba(PAGE, PAGE, pages[i]));
   }
-  writeFileSync(join(exampleDir, 'src', 'scene.generated.ts'), sceneTable(s));
+  writeFileSync(join(exampleDir, 'src', 'scene.generated.ten'), sceneTable(s));
   // The runner's expectations, as data. `tension-core/tests/examples_2d.rs`
   // reads this rather than restating a colour: the guest and the assertion come
   // from the same generator, so a probe cannot mean one thing to the page
@@ -239,6 +239,6 @@ if (isMain) {
   const exampleDir = resolve(process.argv[2] ?? join(here, '..', 'isometric'));
   const s = emit(exampleDir);
   console.log(
-    `emit: ${s.pages.map((p) => p.name).join(', ')} + src/scene.generated.ts -> ${exampleDir}`,
+    `emit: ${s.pages.map((p) => p.name).join(', ')} + src/scene.generated.ten -> ${exampleDir}`,
   );
 }

@@ -15,7 +15,7 @@
 // asserted (`scripts/lib/toolchain.mjs`). The compiler's own arguments are passed
 // through untouched: this only chooses *which* compiler runs.
 //
-//   node ../../scripts/tensionscript.mjs game.ts -o build/game.wasm
+//   node ../../scripts/tensionscript.mjs game.ten -o build/game.wasm
 
 import { spawnSync } from 'node:child_process';
 

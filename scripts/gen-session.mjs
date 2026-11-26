@@ -362,7 +362,7 @@ function renderManifest(arenaPath) {
 // side of the comparison.
 //
 // Primitive constant arrays rather than an array of records: this is the shape
-// \`layout.ts\` already uses for \`RING_CAPACITIES\`, it folds at compile time, and
+// \`layout.ten\` already uses for \`RING_CAPACITIES\`, it folds at compile time, and
 // it keeps a module built almost entirely from \`@unmanaged\` views free of nine
 // managed allocations at startup.
 
@@ -388,7 +388,7 @@ const { expectedHash } = parseArgs(process.argv.slice(2));
 const sessionJson = join(framework, 'session.json');
 const cfg = loadSession(sessionJson, expectedHash);
 
-const layoutTs = join(framework, 'assembly', 'runtime', 'layout.ts');
+const layoutTs = join(framework, 'assembly', 'runtime', 'layout.ten');
 const asconfig = join(framework, 'build', 'session.asconfig.json');
 mkdirSync(dirname(layoutTs), { recursive: true });
 mkdirSync(dirname(asconfig), { recursive: true });
@@ -399,7 +399,7 @@ writeFileSync(asconfig, renderAsconfig(cfg), 'utf8');
 console.log(`==> wrote ${asconfig}`);
 
 const arena = join(repo, 'tension-core', 'src', 'session', 'arena.rs');
-const manifestTs = join(framework, 'assembly', 'runtime', 'manifest.ts');
+const manifestTs = join(framework, 'assembly', 'runtime', 'manifest.ten');
 if (!existsSync(arena)) {
   // One repo, one checkout: the framework reads the host's source, and a
   // checkout without it fails here by design rather than silently emitting a

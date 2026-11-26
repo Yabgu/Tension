@@ -2,7 +2,7 @@
 //
 // They are two independent sets of literals: the adapter's live in
 // `tension-ogre/src/scene.h` (C++), the guest SDK's in
-// `tension-framework/assembly/ogre/wire.ts` (TensionScript). They agree today
+// `tension-framework/assembly/ogre/wire.ten` (TensionScript). They agree today
 // by inspection, and nothing enforces it — a host count smaller than the
 // guest's moves the host's table base and misreads every camera as a node,
 // which is silent at run time and wrong in a way no pixel test would name.
@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)));
 const headerPath = 'tension-ogre/src/scene.h';
-const wirePath = 'tension-framework/assembly/ogre/wire.ts';
+const wirePath = 'tension-framework/assembly/ogre/wire.ten';
 
 /// The pairs that must be equal, in the order a reader wants them: the three
 /// SCENE sub-tables, then MATERIAL and RENDERABLE, then the three tables that

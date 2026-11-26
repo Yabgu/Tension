@@ -211,8 +211,8 @@ pub const CALLBACKS_SLOTS: u16 = 2;
 /// compiled guest's `CLASS_*` constant means. `layout_hash` folds `CLASS_COUNT`,
 /// not the ids themselves, so what pins the ids is the guest tests that
 /// subscribe to a class by number and assert they receive it
-/// (`tension-framework/tests/guest-ogre.ts`, `guest-drop.ts`,
-/// `guest-ai-stream.ts`). Moving one is an SDK bump, not a local edit.
+/// (`tension-framework/tests/guest-ogre.ten`, `guest-drop.ten`,
+/// `guest-ai-stream.ten`). Moving one is an SDK bump, not a local edit.
 pub const CLASS_DEVICE_LOST: u32 = 0;
 pub const CLASS_JOB_FAILED: u32 = 1;
 pub const CLASS_RESOURCE_FAILED: u32 = 2;

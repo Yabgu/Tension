@@ -23,7 +23,7 @@
 //
 // Outputs (all gitignored except where noted):
 //   assets/textures/{tileset_p0,tileset_p1,character}.iwi
-//   src/scene.generated.ts   the guest's constants
+//   src/scene.generated.ten   the guest's constants
 //   scene.json               the runner's expectations
 //
 // SPDX-License-Identifier: MIT
@@ -547,7 +547,7 @@ export const LANTERN_COLOUR: u8[] = ${rgb(lanternTop.colour)};
 export const PROBE_PAGE_A_X: i32 = ${PAGE_A_PROBE.x};
 export const PROBE_PAGE_A_Y: i32 = ${PAGE_A_PROBE.y};
 `;
-writeFileSync(join(here, 'src', 'scene.generated.ts'), scene);
+writeFileSync(join(here, 'src', 'scene.generated.ten'), scene);
 
 writeFileSync(join(here, 'scene.json'), JSON.stringify({
   canvas: CANVAS,
@@ -576,7 +576,7 @@ writeFileSync(join(here, 'scene.json'), JSON.stringify({
   },
 }, null, 2));
 
-console.log(`${RUNNER}: wrote src/scene.generated.ts`);
+console.log(`${RUNNER}: wrote src/scene.generated.ten`);
 console.log(
   `${RUNNER}: ${GROUND_COLS}x${GROUND_ROWS} ground (${GROUND_COLS * GROUND_ROWS} cells) ` +
   `on ${CANVAS.w}x${CANVAS.h} at (${GROUND_ORIGIN.x},${GROUND_ORIGIN.y}), ` +

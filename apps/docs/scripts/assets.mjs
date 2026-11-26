@@ -5,7 +5,7 @@
 //
 // The two apps read the **same book**: `FontBook` indexes the pages the framework
 // baked from `assets/fonts/fonts.json`, and the constants the guest compiles in
-// (`assembly/ui/fonts.generated.ts`) describe those pages. An app that baked a
+// (`assembly/ui/fonts.generated.ten`) describe those pages. An app that baked a
 // *different* spec would be sampling cells from a grid the guest no longer has,
 // which draws neighbouring glyphs and reads as "the font broke". So the spec and
 // the faces come from the framework (`--spec`, `--faces`) and only the output
@@ -22,10 +22,10 @@
 //
 // ## Why the guest's table is emitted into `src/`
 //
-// TensionScript cannot parse JSON (`apps/docs/src/format.ts` ships a small
+// TensionScript cannot parse JSON (`apps/docs/src/format.ten` ships a small
 // extractor for the bundle's header and says why a general parser is the wrong
 // trade). The manifest is the human-readable contract and `verify-atlas.mjs`'s
-// reference; `src/ui-fonts.generated.ts` is what a reader can diff against it.
+// reference; `src/ui-fonts.generated.ten` is what a reader can diff against it.
 
 import { rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -56,7 +56,7 @@ run('bake', [
   '--faces', FRAMEWORK,
   '--atlas', 'assets',
   '--manifest', 'assets/ui.json',
-  '--ts', 'src/ui-fonts.generated.ts',
+  '--ts', 'src/ui-fonts.generated.ten',
   '--preview', 'assets',
 ]);
 
@@ -64,5 +64,5 @@ run('bake', [
 run('verify', [
   join(FRAMEWORK, 'tools', 'font', 'verify-atlas.mjs'),
   '--manifest', 'assets/ui.json',
-  '--ts', 'src/ui-fonts.generated.ts',
+  '--ts', 'src/ui-fonts.generated.ten',
 ]);

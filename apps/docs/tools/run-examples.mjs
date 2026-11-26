@@ -203,7 +203,7 @@ for (let i = 0; i < runnable.length; i++) {
   }
 
   mkdirSync(join(dir, 'build'), { recursive: true });
-  writeFileSync(join(dir, 'src', 'main.ts'), `${source}\n`);
+  writeFileSync(join(dir, 'src', 'main.ten'), `${source}\n`);
 
   // **Not named `asconfig.json`.** TensionScript loads a file by that name from
   // the working directory when no `--config` is given, so leaving one there would
@@ -232,7 +232,7 @@ for (let i = 0; i < runnable.length; i++) {
    */
   const compile = (configPath) => {
     const form = spawnForm(compiler, [
-      join(dir, 'src', 'main.ts'),
+      join(dir, 'src', 'main.ten'),
       '--config', configPath,
       '-o', wasmPath,
     ]);

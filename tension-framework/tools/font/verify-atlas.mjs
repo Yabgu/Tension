@@ -10,7 +10,7 @@
 //
 //   ui.N.iwi              the pixels
 //   ui.json               the contract and a person's reference
-//   fonts.generated.ts    what the guest actually compiles in
+//   fonts.generated.ten    what the guest actually compiles in
 //
 // A bake that regenerated two of the three is the failure mode. It does not
 // throw; it produces a guest that samples cell indices from a grid it no longer
@@ -162,7 +162,7 @@ if (images.length === manifest.pages.length) {
 
 // ── the manifest against the guest's table ──────────────────────────────────
 
-process.stdout.write('\n2. the manifest against fonts.generated.ts\n');
+process.stdout.write('\n2. the manifest against fonts.generated.ten\n');
 
 eq('page count', manifest.pages.length, generatedInt('FONT_PAGE_COUNT'));
 eq('atlas width', atlas.width, generatedInt('FONT_ATLAS_WIDTH'));

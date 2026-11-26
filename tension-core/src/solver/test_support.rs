@@ -1,6 +1,6 @@
 //! Test-side writer for the configuration wire (`tension-solver/DESIGN.md` §12).
 //!
-//! The framework is the format's writer (`tension-framework/assembly/solver.ts`);
+//! The framework is the format's writer (`tension-framework/assembly/solver.ten`);
 //! the WAT fixtures the P5 and P8e tests instantiate cannot call
 //! TensionScript, so this mirrors the encoder in Rust: the same layout, the
 //! same rules — an 8-byte-aligned start, one 8-byte slot per set bit in bit

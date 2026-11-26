@@ -59,13 +59,13 @@ if (!existsSync(join(example, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   }
 }
 
-const form = spawnForm(asc, [join(example, 'ozz-load.ts'),
+const form = spawnForm(asc, [join(example, 'ozz-load.ten'),
                              '--config', join(repo, 'tension-framework', 'build', 'session.asconfig.json'),
                              '-o', join(example, 'build', 'ozz-load.wasm')]);
 const compiled = spawn(form.command, form.args, { cwd: example, shell: form.shell });
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
-  fail(RUNNER, 'ozz-load.ts did not compile');
+  fail(RUNNER, 'ozz-load.ten did not compile');
 }
 
 // The volume the probe reads.

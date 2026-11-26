@@ -118,13 +118,13 @@ try {
 }
 
 const guest = join(out, 'guest-input.wasm');
-const ascentForm = spawnForm(asc, [join(suite, 'tests', 'guest-input.ts'),
+const ascentForm = spawnForm(asc, [join(suite, 'tests', 'guest-input.ten'),
                                   '--config', join(framework, 'build', 'session.asconfig.json'),
                                   '-o', guest]);
 const compiled = spawn(ascentForm.command, ascentForm.args, { shell: ascentForm.shell });
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
-  fail(RUNNER, 'guest-input.ts did not compile');
+  fail(RUNNER, 'guest-input.ten did not compile');
 }
 
 /// Run the guest and assert a stdout prefix.

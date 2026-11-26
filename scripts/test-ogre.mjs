@@ -585,11 +585,11 @@ if (!windowed) {
     // Compiled from the example's own directory: `tension-framework` and the
     // two capability SDKs resolve through its `node_modules`, and the `~lib`
     // prefix asc rewrites them to is relative to the working directory.
-    const form = spawnForm(asc, ['game.ts', '--config', asconfig, '-o', guest]);
+    const form = spawnForm(asc, ['game.ten', '--config', asconfig, '-o', guest]);
     const compiled = spawn(form.command, form.args, { cwd: example, shell: form.shell });
     if (compiled.status !== 0) {
       process.stderr.write(compiled.stdout + compiled.stderr);
-      fail(RUNNER, 'input-camera: game.ts did not compile');
+      fail(RUNNER, 'input-camera: game.ten did not compile');
     }
 
     const result = spawn(core, ['--capability', dso, '--capability', inputDso, guest,

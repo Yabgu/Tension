@@ -54,7 +54,7 @@ pub const MAX_ATLAS_PAGES: usize = 16;
 /// **Measured, not chosen for symmetry.** The outer guest is the one that owns
 /// the window and draws its own content into the same window, and the editor
 /// binds its own generated atlas at page 0 of its game pipeline
-/// (`apps/editor/src/main.ts`). Play mode hides chrome; it does not re-bind or
+/// (`apps/editor/src/main.ten`). Play mode hides chrome; it does not re-bind or
 /// rebuild that pipeline, so page 0 has to keep holding what it held before the
 /// nested guest started. So the nested guest gets `1..16`.
 ///

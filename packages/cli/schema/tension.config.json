@@ -13,7 +13,7 @@
     "entry": {
       "type": "string",
       "minLength": 1,
-      "default": "src/main.ts",
+      "default": "src/main.ten",
       "description": "The guest's entry file, relative to the project root. Passed to `tensionscript`."
     },
     "renderer": {

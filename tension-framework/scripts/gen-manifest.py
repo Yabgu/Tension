@@ -18,7 +18,7 @@ new part is only the direction — the framework reading `tension-core`.
 `TYPES` array. `MANIFEST_OFFSET` (`arena.rs:58`) and `MANIFEST_LEN`
 (`arena.rs:455`) are *expressions*, not literals, and they are deliberately not
 parsed: the guest takes both from the runtime control block (`ArenaControl
-.manifestOff` / `.manifestLen`, `wire.ts:118-119`), which the host fills from
+.manifestOff` / `.manifestLen`, `wire.ten:118-119`), which the host fills from
 the same constants. One fewer thing to keep in step.
 
 **Fail-closed is the point.** Every failure mode below exits non-zero with the
@@ -161,7 +161,7 @@ def main():
 // the other side of the comparison.
 //
 // Primitive constant arrays rather than an array of records: this is the shape
-// `layout.ts` already uses for `RING_CAPACITIES`, it folds at compile time, and
+// `layout.ten` already uses for `RING_CAPACITIES`, it folds at compile time, and
 // it keeps a module built almost entirely from `@unmanaged` views free of nine
 // managed allocations at startup.
 

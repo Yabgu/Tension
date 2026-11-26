@@ -25,7 +25,7 @@ npm-debug.log*
 # needs the file to be present, and committing it made every `tension build` in an
 # example dirty the tree. `apps/editor/.gitignore` already treats its copy this
 # way; this is the same rule for the examples.
-examples/2d/*/src/graph.generated.ts
+examples/2d/*/src/graph.generated.ten
 
 # Build output
 build/
