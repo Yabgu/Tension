@@ -50,6 +50,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { compilerIdentity, readBuildRecord, writeBuildRecord } from "./lib/toolchain.mjs";
+import { sameReadSet, readSetFor, treeDigests } from "./lib/read-set.mjs";
 import { PROGRAM_ALIASES } from "./lib/program-aliases.mjs";
 import { guestStem, isGuestSource } from "./lib/guest-extensions.mjs";
 
@@ -343,6 +344,9 @@ for (const rel of sources) {
 
 /** The compiler this run builds with — asked once, and the identity a record carries. */
 const identity = compilerIdentity();
+// **The trees a build can read, digested once per run** (DL49). Measured at 5.5 ms for
+// both trees together, so the cost of asking is not the reason this was never asked.
+const readTrees = treeDigests(repo, identity.absolute);
 if (identity.hash === null) {
   console.error(
     "build-test-programs: no compiler to identify — nothing is skipped on a build record " +
@@ -442,6 +446,16 @@ for (const { rel, name, flags } of work) {
   // artifact, and a skip test that ignores any part of what the record states is a skip
   // test that can be wrong. `.ten` naming `.tension` is wrong even though the bytes are
   // right, because the *record's job* is to name the source.
+  // **And the fifth thing: what the build read** (DL49). The other four — mtime,
+  // compiler, source path, flags — cannot see a rename inside a *dependency*.
+  // `record.source` names the entry; a guest's bytes also depend on every file the
+  // compiler pulled in, and DL47 renamed 70 of those under `tension-framework/assembly`
+  // without touching a single entry source. Eighteen debug artifacts kept their old
+  // paths through a chain run that reported them current. The read set is the record's
+  // answer to "could a dependency have moved?", computed by `lib/read-set.mjs` and
+  // validated against the compiler's own `.debug_line` for all 35 debug builds
+  // (`scripts/check-read-set.mjs`).
+  const readSet = readSetFor(ts, readTrees.digests, readTrees.roots);
   const upToDate =
     !force &&
     existsSync(wasm) &&
@@ -450,7 +464,8 @@ for (const { rel, name, flags } of work) {
     record !== null &&
     record.compiler === identity.hash &&
     record.source === rel &&
-    sameFlags(record.flags, usedFlags);
+    sameFlags(record.flags, usedFlags) &&
+    sameReadSet(record.readSet, readSet);
   if (upToDate) {
     ++skipped;
     continue;
@@ -476,6 +491,10 @@ for (const { rel, name, flags } of work) {
     compilerPath: identity.path,
     source: rel,
     flags: usedFlags,
+    // What else the compile read (DL49). Only the trees this build reached, so a record
+    // with no `framework` key claims nothing about that tree and a change under it has
+    // no claim on this artifact.
+    readSet,
   });
   ++built;
 }

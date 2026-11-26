@@ -87,6 +87,7 @@ import { pathToFileURL } from 'node:url';
 import { REPO, capture, compilerBundleDigest, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
 import { PROGRAM_ALIASES } from './lib/program-aliases.mjs';
 import { isGuestSource, guestStem } from './lib/guest-extensions.mjs';
+import { readTreesFor, treeDigests } from './lib/read-set.mjs';
 import {
   readBuildRecord as readArtifactRecord,
   runtimeInputDigest,
@@ -647,6 +648,29 @@ async function verify() {
     present > 0 && recorded === present && installed.hash !== null ? 'PASS' : 'STALE',
   );
 
+  // The read set's model, against the compiler's own debug info (DL49).
+  //
+  // `guests: built by the installed compiler` asks whether each artifact's record matches
+  // the tree. This row asks the prior question — whether the record's *read set* is the
+  // truth about what the compile read. The walk in `lib/read-set.mjs` models the
+  // resolver by following import literals, and a model is exactly what this project keeps
+  // paying for trusting: so it is compared with a `--debug` artifact's `.debug_line`,
+  // which lists every file that compile actually read. A disagreement means the walk
+  // would rebuild the wrong set, and it fails here rather than silently over- or
+  // under-invalidating. `scripts/check-read-set.mjs` runs the same comparison standalone.
+  {
+    const verdict = readSetAgreement();
+    row(
+      'guests: read set vs .debug_line',
+      verdict.total === 0 ? 'every debug artifact' : `${verdict.total} debug artifacts`,
+      verdict.total === 0
+        ? 'no debug artifacts (run build-test-programs --debug)'
+        : `${verdict.agree} of ${verdict.total} agree`,
+      verdict.total > 0 && verdict.agree === verdict.total ? 'PASS' : 'STALE',
+      verdict.disagree.slice(0, 5),
+    );
+  }
+
   // Generated ABI docs, asked of the generator itself.
   const doc = spawnSync(process.execPath, [join(REPO, 'scripts', 'gen-abi-doc.mjs'), '--check'], {
     encoding: 'utf8',
@@ -661,6 +685,56 @@ async function verify() {
   );
 
   return rows;
+}
+
+/// Whether the read-set walk agrees with every debug artifact's `.debug_line`.
+///
+/// Ground truth, not a second opinion: a `--debug` artifact names every file its compile
+/// read, so the walk's answer is checked against what the compiler did rather than against
+/// what the resolver is documented to do.
+function readSetAgreement() {
+  const debugDir = join(PROGRAMS, "build", "debug");
+  const identity = compilerIdentity();
+  const { roots } = treeDigests(REPO, identity.absolute);
+  const out = { agree: 0, total: 0, disagree: [] };
+  if (!existsSync(debugDir)) return out;
+  for (const file of readdirSync(debugDir)) {
+    if (!file.endsWith(".wasm")) continue;
+    const artifact = join(debugDir, file);
+    const record = readArtifactRecord(artifact);
+    if (record === null || typeof record.source !== "string") continue;
+    const source = join(PROGRAMS, record.source);
+    if (!existsSync(source)) continue;
+    out.total += 1;
+    const predicted = readTreesFor(source, roots).framework;
+    const actual = debugLineNames(artifact).some((path) => path.includes("tension-framework"));
+    if (predicted === actual) out.agree += 1;
+    else out.disagree.push(`${file}: walk says framework=${predicted}, .debug_line says ${actual}`);
+  }
+  return out;
+}
+
+/// The file names in an artifact's `.debug_line` header, or [] when it has none.
+function debugLineNames(file) {
+  const bytes = readFileSync(file);
+  const leb = (buf, at) => {
+    let result = 0, shift = 0, byte;
+    do { byte = buf[at++]; result |= (byte & 0x7f) << shift; shift += 7; } while (byte & 0x80);
+    return [result, at];
+  };
+  let i = 8;
+  while (i < bytes.length) {
+    const id = bytes[i++];
+    const [size, afterSize] = leb(bytes, i);
+    const payload = bytes.subarray(afterSize, afterSize + size);
+    i = afterSize + size;
+    if (id !== 0) continue;
+    const [nameLen, afterName] = leb(payload, 0);
+    if (payload.subarray(afterName, afterName + nameLen).toString("utf8") !== ".debug_line") continue;
+    const body = payload.subarray(afterName + nameLen, afterName + nameLen + 8192).toString("latin1");
+    return [...body.matchAll(/[\x20-\x7e]{6,}/g)].map((match) => match[0]);
+  }
+  return [];
 }
 
 /// The artifact a committed fixture is compared against: the build output of the same
