@@ -32,16 +32,28 @@ CI reads these bytes and nothing else.
 
 ## Which compiler built it
 
-The vendored pin, proven by the one line the repo's compiler entry point prints
-on every build:
+**The pin at DL49** (this changed twice since the fixtures were first committed, and
+each time the bytes below moved with it):
 
 ```
-tensionscript: 0.14.1 from /home/acakar/work/Tension/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js (vendored yabgu_gm-tensionscript-0.14.1-g9697d1361c3f.tar)
+.yabgu_gm-tensionscript-0.14.1-g184b5d6fda16.tar
+installed bundle identity 035b816380d3
 ```
 
-i.e. `third_party/TensionScript` at **`03e0507b`** (`v0.14.0-9-g03e0507b`),
-packed as `yabgu_gm-tensionscript-0.14.1-g9697d1361c3f.tar` — the spec the root
-`package.json` devDependency names.
+i.e. `third_party/TensionScript` at **`184b5d6f`**, packed as
+`yabgu_gm-tensionscript-0.14.1-g184b5d6fda16.tar` — the spec the root
+`package.json` devDependency names, and the one `node_modules/.bin/tensionscript`
+runs. The compiler's own `dist/assembly.js.build.json` is the authority for the
+identity; a fixture's `.build.json` beside it records the same value.
+
+**Why these two fixtures are re-pinned at DL49** (DL48 found them behind). DL47
+taught `mangleInternalPath` to strip `.ten`/`.tension` as well as `.ts`, which
+shortens every mangled identifier and every DWARF path, so *all* debug artifacts
+move. The build record could not see it — it stated the entry source, the compiler
+and the flags, and a rename of a **dependency** is none of those three — so the
+chain skipped these two along with the other 33 and left them built by
+`f97c0f03b334`. DL49 added a read-set digest to the record, rebuilt everything, and
+re-pinned these bytes from the rebuild.
 
 ## Regenerating it
 
@@ -72,13 +84,24 @@ report asserts the map resolves beside the artifact.
 
 ## Bytes
 
-- `rt-guards.wasm`: 138,968 bytes,
-  SHA-256 `b360ea1a21062b81051ba777e0aa6b658dbfbd8363ef678a5aef10bbe179d4f3`
-- `rt-guards.wasm.map`: 502,936 bytes,
-  SHA-256 `8138a368f84b6c90d566197ead4da3cae4f64dbb4e01d828b5d2777597f48382`
-- `main-policy.wasm`: 311,696 bytes,
-  SHA-256 `fd9ec2d90d7329652efc5b11dea3ba680f22523c31b965f2a345edfcfa0bc7c8` (no map: the async breakpoint test asserts a stop, not the
-  startup report's map line, and the map is 1.2 MB)
+Re-pinned by DL49 (`035b816380d3`), each copied from the matching
+`build/debug/` artifact of the same chain run:
+
+- `rt-guards.wasm`: 140,113 bytes,
+  SHA-256 `33c018e8ad6ffec224a9d9516eb5cc3c00b26f878b935bad537ae4d090c3f6e1`
+  (was 138,968 bytes / `b360ea1a2106…` under `f97c0f03b334`)
+- `rt-guards.wasm.map`: 512,984 bytes,
+  SHA-256 `6108ef240e8581d3cfa241c90eb7260305d21943a230941e44dfa50b51c520b6`
+  (was 502,936 bytes / `8138a368f84b…`)
+- `main-policy.wasm`: 314,978 bytes,
+  SHA-256 `6d105e14ef837dc90c3182647b679055bc7fed6f0cef5901636a5c12873401aa`
+  (was 311,696 bytes / `fd9ec2d90d73…`; no map committed — the async breakpoint
+  test asserts a stop, not the startup report's map line, and the map is 1.3 MB)
+
+These are the bytes `node scripts/build-test-programs.mjs --debug` produces, which
+is the point: `tension-core/tests/support/programs.rs` prefers a **built** artifact
+when the checkout has a compiler, so a fixture left behind a compiler change is a
+fixture nothing checks.
 
 `rt-guards.wasm` is the **Promise** guest (built without stack switching);
 `main-policy.wasm` is the **stack-switching** guest. Both carry
@@ -103,8 +126,10 @@ breakpoint does not depend on the recorded directory existing: lldb matches
 rebuilding the same source with `--compDir /nonexistent/runner/work/Tension` and
 binding the breakpoint anyway.
 
-The *function* name in a stop carries the module path, so it reads
-`tension-core/tests/programs/async/rt-guards/_start_game` for this fixture
-(the path relative to the repository root, which is where the command above
-runs) rather than the `async/rt-guards/_start_game` a `build/debug/` artifact
-gets. The assertion is on `rt-guards/_start_game`, which both satisfy.
+The *function* name in a stop carries the module's **internal path**, which is the
+entry path with its extension stripped (`mangleInternalPath`, since DL47) — so a
+stop reads `…/async/rt-guards/_start_game`, with no `.ten` anywhere in it. The
+assertion in `debugger.rs` is on `async/rt-guards/_start_game`, and it read
+`rt-guards.ten/_start_game` until DL49: that older spelling was what
+`f97c0f03b334` emitted, and it stayed green only because this suite was running
+against an artifact built by that compiler rather than the installed one.

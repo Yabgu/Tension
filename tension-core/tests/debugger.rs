@@ -595,13 +595,21 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
         observation.describe()
     );
     // The stop must be inside the guest's own function, not the host's frame
-    // that happened to run: `<dir>/rt-guards.ten/_start_game` is the symbol
-    // the JIT image carries for it — the mangled module prefix is the entry
-    // path, so it carries the extension (DL45 renamed the file and this symbol
-    // with it).
+    // that happened to run: `async/rt-guards/_start_game` is the symbol the JIT
+    // image carries for it — the mangled module prefix is the entry's *internal*
+    // path, which **drops the extension** since DL47 taught `mangleInternalPath`
+    // to strip `.ten`/`.tension` as well as `.ts`.
+    //
+    // This assertion read `rt-guards.ten/_start_game` until DL49, and it was green
+    // only because the artifact it ran against had been built by an older compiler:
+    // `f97c0f03b334` still carried the extension into the symbol, `035b816380d3`
+    // strips it. A build record that could not see a dependency move meant the
+    // `guests:` row reported that artifact current and this suite validated a symbol
+    // the installed compiler no longer emits. Asserting the full module path keeps
+    // the check as specific as before: a stop in the host's frame cannot match it.
     let function = observation.function.as_deref().unwrap_or("");
     assert!(
-        function.contains("rt-guards.ten/_start_game"),
+        function.contains("async/rt-guards/_start_game"),
         "stopped in the host rather than the guest: {}",
         observation.describe()
     );
