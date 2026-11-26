@@ -237,15 +237,15 @@ fn the_guest_debugger_opens_a_debug_artifact() {
         let program = name
             .strip_prefix("debug: ")
             .unwrap_or_else(|| panic!("`{name}` is not named `debug: <program>`"));
-        // **The canonical guest spelling** (DL45): `.tension`. The `.ts` this
+        // **The canonical guest spelling**: `.ten` (DL46; it was `.tension` at DL45). The `.ts` this
         // asserted through DL44 is still accepted by the compiler during the
         // deprecation window, so this could read green while the task compiled a
         // file the tree no longer has — which is why the assertion names the
         // canonical extension rather than any accepted one.
         assert!(
-            command.contains(&format!("{program}.tension")),
+            command.contains(&format!("{program}.ten")),
             "`{name}` runs task `{task_label}` (`{command}`), which does not compile \
-             {program}.tension"
+             {program}.ten"
         );
         assert!(
             command.contains(&format!("{program}.wasm")),

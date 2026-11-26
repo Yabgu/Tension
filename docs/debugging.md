@@ -195,9 +195,10 @@ error: JIT(0x…) unable to resolve a line table file address 0x… back to a
 ```
 
 A table from two guests, because the shape is not yet predictable. It is a **record of
-a measurement** taken before DL45, so it keeps the spelling the tree had then: the
-guest below is `tests/programs/async/async-on-main.tension` today, and `game.ts` is
-the user's file, untouched by the rename.
+a measurement** taken before DL45, so the row keeps the spelling the tree had then
+(`.ts`, the pre-DL45 name). That guest is `tests/programs/async/async-on-main.ten`
+today — renamed twice since, `.ts` → `.tension` (DL45) → `.ten` (DL46) — and `game.ts`
+is the user's file, untouched by either rename.
 
 | guest | line | what it is | result |
 |---|---|---|---|

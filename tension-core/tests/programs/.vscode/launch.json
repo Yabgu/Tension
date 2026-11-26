@@ -4,7 +4,7 @@
   // There is no picker and no runner script in the debug path: what you see in
   // `args` below is the whole command line, in the order the host receives it.
   // `build/debug/<name>.wasm` is the artifact with DWARF in it — the release
-  // `build/<name>.wasm` has no `.debug_*` sections, so a `.tension` breakpoint
+  // `build/<name>.wasm` has no `.debug_*` sections, so a `.ten` breakpoint
   // cannot bind in it and the run still looks normal.
   //
   // `preLaunchTask` compiles that one program (see tasks.json: the command is

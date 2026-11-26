@@ -2,12 +2,12 @@
 
 Three release guests, all built from `../../thread/`, all committed as bytes:
 
-- **`wake-on-worker.wasm`** — `wake-on-worker.tension`. `tests/threads.rs` runs it twice
+- **`wake-on-worker.wasm`** — `wake-on-worker.ten`. `tests/threads.rs` runs it twice
   and asserts the pair at
   [`a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake`](../../../tests/threads.rs):
   with `--post-completion 4,7` a parked worker resumes and exits 0; without it the
   same guest exits non-zero with a strand refusal.
-- **`spawn-entry-async.wasm`** — `spawn-entry-async.tension`. Run once by
+- **`spawn-entry-async.wasm`** — `spawn-entry-async.ten`. Run once by
   [`an_async_worker_entry_is_served_as_its_spawn_entry`](../../../tests/threads.rs):
   a worker spawned at `__spawnIndexOf(anAsyncFunction)`'s own answer must run its
   body, print both of its lines, and exit 0 with nothing stranded. The number
@@ -15,7 +15,7 @@ Three release guests, all built from `../../thread/`, all committed as bytes:
   (the factory) is what the API answered before DL31, and a factory completes
   normally, so `__serveOne` queued nothing and the task it created was never
   driven, at exit 0 and with no sentence.
-- **`two-waiters-late.wasm`** — `two-waiters-late.tension`. Run twice by
+- **`two-waiters-late.wasm`** — `two-waiters-late.ten`. Run twice by
   [`a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks`](../../../tests/threads.rs):
   with `--post-completion-after-parks 4,7,2` the completion lands after both parks
   and the run must exit 1 with a count of exactly 1; with `--post-completion 4,7`

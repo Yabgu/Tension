@@ -45,8 +45,8 @@
 //! nothing could bind, and (b) and (c) returned after asserting the startup
 //! report. **That is false**, and it was measured false on 2026-11-22: a
 //! DWARF-carrying guest is registered — `image list` shows `[30] … JIT(0x…)` —
-//! and a breakpoint on `rt-guards.tension:96` stops inside
-//! `async/rt-guards.tension/_start_game`. Both lldb builds on that machine agree:
+//! and a breakpoint on `rt-guards.ten:96` stops inside
+//! `async/rt-guards.ten/_start_game`. Both lldb builds on that machine agree:
 //! codelldb's 20.1.4 and msys2's 23.1.5. `docs/debugging.md` carries the
 //! transcripts.
 //!
@@ -104,13 +104,13 @@ use support_programs::{debug_fixtures_dir, guest_debug};
 /// The interpreter under test.
 const BINARY: &str = env!("CARGO_BIN_EXE_tension-core");
 
-/// The line in `tests/programs/async/rt-guards.tension` that the Promise guest is
+/// The line in `tests/programs/async/rt-guards.ten` that the Promise guest is
 /// expected to stop on: `line("job-key: " + handle._record.key.toString());`.
 /// It runs after two host calls, so the stop is inside the guest's own body
 /// rather than at its entry.
 const RT_GUARDS_LINE: u64 = 96;
 
-/// The line in `tests/programs/async/main-policy.tension`: the `print` after two
+/// The line in `tests/programs/async/main-policy.ten`: the `print` after two
 /// `await`s. Stopping there is the claim — the program suspended twice on the
 /// stackful backend and the debugger still had a source line to stop on.
 const MAIN_POLICY_LINE: u64 = 41;
@@ -513,7 +513,7 @@ fn the_debug_report_names_what_a_debugger_can_see() {
         "the map is beside the artifact, so it must resolve — otherwise the source-map link is broken\ngot:\n{map_line}"
     );
 
-    for wanted in recipe_lines("rt-guards.tension", "rt-guards/") {
+    for wanted in recipe_lines("rt-guards.ten", "rt-guards/") {
         assert!(
             stderr.contains(&wanted),
             "the report must carry the lldb recipe line `{wanted}`\nstderr:\n{stderr}"
@@ -525,7 +525,7 @@ fn the_debug_report_names_what_a_debugger_can_see() {
 ///
 /// The plain build emits DWARF today, so this is the assertion that keeps the
 /// whole path — compiler DWARF, host `--debug`, wasmtime's JIT registration,
-/// lldb — honest. The measured stop is `rt-guards.tension:96`.
+/// lldb — honest. The measured stop is `rt-guards.ten:96`.
 ///
 /// Windows used to return here after asserting the report, on the belief that
 /// lldb there registers no JIT image. Measured false on 2026-11-22: the image is
@@ -549,7 +549,7 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
         return;
     }
 
-    let observation = observe_under_lldb(&guest, "rt-guards.tension", RT_GUARDS_LINE);
+    let observation = observe_under_lldb(&guest, "rt-guards.ten", RT_GUARDS_LINE);
     if let Some(reason) = &observation.reason {
         support_ci::skip_or_fail(format_args!("debugger: {reason}"));
         return;
@@ -584,7 +584,7 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
     );
     assert_eq!(
         observation.file.as_deref(),
-        Some("rt-guards.tension"),
+        Some("rt-guards.ten"),
         "stopped in the wrong file: {}",
         observation.describe()
     );
@@ -595,13 +595,13 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
         observation.describe()
     );
     // The stop must be inside the guest's own function, not the host's frame
-    // that happened to run: `<dir>/rt-guards.tension/_start_game` is the symbol
+    // that happened to run: `<dir>/rt-guards.ten/_start_game` is the symbol
     // the JIT image carries for it — the mangled module prefix is the entry
     // path, so it carries the extension (DL45 renamed the file and this symbol
     // with it).
     let function = observation.function.as_deref().unwrap_or("");
     assert!(
-        function.contains("rt-guards.tension/_start_game"),
+        function.contains("rt-guards.ten/_start_game"),
         "stopped in the host rather than the guest: {}",
         observation.describe()
     );
@@ -657,7 +657,7 @@ fn a_guest_without_dwarf_cannot_be_stopped_at_a_source_line() {
     let plain = work_dir.join("rt-guards.wasm");
     std::fs::write(&plain, &stripped).expect("the stripped guest is writable");
 
-    let observation = observe_under_lldb(&plain, "rt-guards.tension", RT_GUARDS_LINE);
+    let observation = observe_under_lldb(&plain, "rt-guards.ten", RT_GUARDS_LINE);
     let _ = std::fs::remove_dir_all(&work_dir);
 
     assert!(
@@ -708,7 +708,7 @@ fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
         return;
     }
 
-    let observation = observe_under_lldb(&guest, "main-policy.tension", MAIN_POLICY_LINE);
+    let observation = observe_under_lldb(&guest, "main-policy.ten", MAIN_POLICY_LINE);
     if let Some(reason) = &observation.reason {
         support_ci::skip_or_fail(format_args!("debugger: {reason}"));
         return;
@@ -734,7 +734,7 @@ fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
     );
     assert_eq!(
         observation.file.as_deref(),
-        Some("main-policy.tension"),
+        Some("main-policy.ten"),
         "stopped in the wrong file: {}",
         observation.describe()
     );

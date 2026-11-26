@@ -9,7 +9,7 @@ assertion — a much less legible failure than a mismatched artifact.
 
 ## What it is
 
-`tests/programs/fiber/i70-fiber.tension`, compiled with the thread flags plus
+`tests/programs/fiber/i70-fiber.ten`, compiled with the thread flags plus
 `--stackful-backend=fiber`:
 
 ```

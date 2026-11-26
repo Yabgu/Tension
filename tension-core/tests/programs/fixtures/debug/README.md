@@ -1,9 +1,9 @@
 # `fixtures/debug` — the debug guest the breakpoint tests bind in
 
 `rt-guards.wasm` (and the source map the compiler wrote beside it) is a
-**`--debug --sourceMap` build of `../../async/rt-guards.tension`**, committed as
+**`--debug --sourceMap` build of `../../async/rt-guards.ten`**, committed as
 bytes. `tension-core/tests/debugger.rs` sets a source breakpoint at
-`rt-guards.tension:96` in it and asserts that the process stops there.
+`rt-guards.ten:96` in it and asserts that the process stops there.
 
 ## Why it is committed
 
@@ -48,13 +48,13 @@ packed as `yabgu_gm-tensionscript-0.14.1-g9697d1361c3f.tar` — the spec the roo
 From the repository root, with the pin installed (`npm install`):
 
 ```sh
-node scripts/tensionscript.mjs tension-core/tests/programs/async/rt-guards.tension \
+node scripts/tensionscript.mjs tension-core/tests/programs/async/rt-guards.ten \
   --outFile tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
   --sourceMap --runtime incremental --target release --optimizeLevel 0 --debug
 
 # the stack-switching guest (its flags are `build-test-programs.mjs`'s
 # ASYNC_ON_MAIN_FLAGS plus --debug --sourceMap)
-node scripts/tensionscript.mjs tension-core/tests/programs/async/main-policy.tension \
+node scripts/tensionscript.mjs tension-core/tests/programs/async/main-policy.ten \
   --outFile tension-core/tests/programs/fixtures/debug/main-policy.wasm \
   --sourceMap --runtime incremental --target release --optimizeLevel 0 --debug \
   --enable threads --enable stack-switching
@@ -99,7 +99,7 @@ carries that fix, and this fixture is the proof the async breakpoint test needs.
 therefore reproducible on the machine that ran the command and not
 byte-identical to a rebuild elsewhere — nothing here asserts a hash, and the
 breakpoint does not depend on the recorded directory existing: lldb matches
-`-f rt-guards.tension -l 96` against the line table's file names, measured here by
+`-f rt-guards.ten -l 96` against the line table's file names, measured here by
 rebuilding the same source with `--compDir /nonexistent/runner/work/Tension` and
 binding the breakpoint anyway.
 
