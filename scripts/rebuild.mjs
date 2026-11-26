@@ -514,22 +514,58 @@ async function verify() {
   // and covers all fifteen, aliases included.
   //
   // Three states, and the last two are different problems with different fixes:
-  //   current    the fixture is byte-identical to the artifact the build produces
+  //   current    the fixture equals the artifact the build produces
   //   behind     an artifact exists and differs — one of the two is out of date, both named
   //   not built  no artifact for this fixture — run the chain; that is not staleness, and
   //              conflating the two is what made this row unreadable
+  //
+  // **Two comparisons, chosen by a property of the bytes** (DL50). Byte equality is only a
+  // promise where the bytes themselves are host-independent. A `--debug` artifact embeds
+  // `DW_AT_comp_dir` — the absolute working directory of the compile — so its bytes differ
+  // on every host by construction: on Windows the same fixtures differ from 55,806 of
+  // 140,093 bytes onward, with the **line tables identical** (WIN24). A gate that demands
+  // byte equality there is asking a question that has no true answer on that host.
+  //
+  // So: a fixture carrying a `.debug_line` section is compared by **what the line table
+  // means** — unit count, file names repo-relative, row count, unreachable, unpaired, and
+  // per-file lines/unreachable — using the compiler checkout's own `tests/debug/census.js`
+  // rather than a second comparator written here. Everything else is compared by **bytes**,
+  // which for a release artifact is the stronger test and is proven host-independent by the
+  // Windows run itself (8 of those 10 rows passed there).
+  //
+  // The property, not the directory, decides: `.debug_line` **is** what carries
+  // `DW_AT_comp_dir`, so asking whether it is present asks exactly the question. A fixture
+  // whose directory said "debug" but whose bytes carried no `.debug_line` would otherwise
+  // be compared the wrong way with no one the wiser.
   const fixtures = probe('git', ['-C', REPO, 'ls-files', 'tension-core/tests/programs/fixtures']);
   if (fixtures === null) {
     row('fixtures: committed .wasm', 'enumerable', 'git ls-files failed', 'UNKNOWN');
   } else {
     const wasm = fixtures.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.wasm'));
-    const behind = [];
+    const behindBytes = [];
     const notBuilt = [];
+    let behindCount = 0;
+    const byKind = { bytes: 0, dwarf: 0 };
+    const dwarfDetail = [];
     for (const rel of wasm) {
       const full = join(REPO, rel);
       if (!existsSync(full)) { notBuilt.push(`${rel}: the fixture itself is missing`); continue; }
       const artifact = fixtureArtifact(rel);
       if (!existsSync(artifact)) { notBuilt.push(`${rel}: no ${relative(REPO, artifact).split('\\').join('/')}`); continue; }
+      const kind = hasDebugLine(full) || hasDebugLine(artifact) ? 'dwarf' : 'bytes';
+      byKind[kind] += 1;
+      if (kind === 'dwarf') {
+        // Named in the row's detail whether it passes or fails: a reader must be able to
+        // see which fixtures were *not* held to byte equality, and on which host.
+        const shape = await compareDwarf(full, artifact);
+        dwarfDetail.push(
+          `${rel}: DWARF shape ${shape.same ? 'matches' : 'DIFFERS'} — ${shape.note}` +
+            ` (host ${process.platform}; bytes embed DW_AT_comp_dir and are not compared)`,
+        );
+        // Counted, not repeated: `dwarfDetail` already carries this line with its reason.
+        if (!shape.same) behindCount += 1;
+        continue;
+      }
       const want = captureHash(artifact);
       const have = captureHash(full);
       if (want !== have) {
@@ -539,21 +575,27 @@ async function verify() {
         // fact: these bytes came from a compiler that is not the one installed.
         const record = readBuildRecord(full);
         const built = record && typeof record.compiler === 'string' ? ` [fixture built by ${record.compiler.slice(0, 12)}]` : '';
-        behind.push(
+        behindCount += 1;
+        behindBytes.push(
           `${rel}: fixture ${have.slice(0, 12)} != build ${want.slice(0, 12)}` +
             ` (${relative(REPO, artifact).split('\\').join('/')})${built}`,
         );
       }
     }
-    const problems = behind.length + notBuilt.length;
+    const problems = behindCount + notBuilt.length;
+    // The comparison split is in the row itself, not only in a detail line: `13 bytes,
+    // 2 dwarf` tells a reader which fixtures were held to byte equality and which to line
+    // table shape, without scrolling. DL50's whole point is that a row must not quietly
+    // measure something other than what its words say.
+    const split = `${byKind.bytes} bytes, ${byKind.dwarf} dwarf`;
     row(
       'fixtures: committed .wasm -> build',
-      `${wasm.length} present, each equal to its build`,
+      `${wasm.length} present, equal by ${byKind.dwarf > 0 ? 'bytes or DWARF shape' : 'bytes'}`,
       problems === 0
-        ? `${wasm.length} current`
-        : `${wasm.length - problems} current, ${behind.length} behind, ${notBuilt.length} not built`,
+        ? `${wasm.length} current (${split})`
+        : `${wasm.length - problems} current, ${behindCount} behind, ${notBuilt.length} not built (${split})`,
       problems === 0 ? 'PASS' : 'STALE',
-      [...behind, ...notBuilt],
+      [...dwarfDetail, ...behindBytes, ...notBuilt],
     );
   }
 
@@ -685,6 +727,72 @@ async function verify() {
   );
 
   return rows;
+}
+
+/// Whether an artifact carries a `.debug_line` section — the property that decides how a
+/// fixture is compared, and the thing that carries `DW_AT_comp_dir`.
+function hasDebugLine(file) {
+  try {
+    return readFileSync(file).includes(Buffer.from(".debug_line"));
+  } catch {
+    return false;
+  }
+}
+
+/// The compiler checkout's census, imported from **that checkout** for the same reason
+/// `build-record.mjs` is: one definition of what a line table means, kept where it is used,
+/// so a second comparator here cannot drift from the one the compiler project tests.
+let censusModule = null;
+async function censusFor() {
+  if (censusModule !== null) return censusModule;
+  const module = join(COMPILER_DIR, "tests", "debug", "census.js");
+  if (!existsSync(module)) return null;
+  try {
+    censusModule = await import(pathToFileURL(module).href);
+  } catch {
+    censusModule = null;
+  }
+  return censusModule;
+}
+
+/// What a line table means, independent of the host it was compiled on.
+///
+/// Everything here is structural. **Excluded on purpose**: the unpaired rows' *addresses*
+/// (absolute code offsets) and nothing else — the census's per-file and per-line
+/// `locations`/`bytes` were measured to survive a `--compDir` change unchanged, so they
+/// stay in; a shifted data segment can move an address, so an address never does.
+function dwarfShape(result) {
+  const files = [...result.files.entries()]
+    .map(([file, summary]) =>
+      `${file.replace(/\\/g, "/")}|${summary.lines}|${summary.unreachable}|${summary.locations}|${summary.bytes}`)
+    .sort();
+  const rows = result.lines
+    .map((line) => `${line.file.replace(/\\/g, "/")}:${line.line}:${line.unreachable ? 1 : 0}:${line.locations}:${line.bytes}`)
+    .sort();
+  return { units: result.units, files, rows, unreachable: result.unreachable, unpaired: result.unpaired };
+}
+
+/// Compare a fixture with its build by line-table shape, and say what differed.
+async function compareDwarf(fixturePath, artifactPath) {
+  const module = await censusFor();
+  if (module === null) {
+    return { same: false, note: "the compiler checkout has no tests/debug/census.js to compare with" };
+  }
+  const a = dwarfShape(module.census(readFileSync(fixturePath)));
+  const b = dwarfShape(module.census(readFileSync(artifactPath)));
+  if (a.units !== b.units) return { same: false, note: `${a.units} unit(s) vs ${b.units}` };
+  if (a.unreachable !== b.unreachable) return { same: false, note: `${a.unreachable} unreachable vs ${b.unreachable}` };
+  if (a.unpaired !== b.unpaired) return { same: false, note: `${a.unpaired} unpaired vs ${b.unpaired}` };
+  if (JSON.stringify(a.files) !== JSON.stringify(b.files)) {
+    const first = a.files.find((entry, index) => entry !== b.files[index]) ?? `${b.files.length} file(s) vs ${a.files.length}`;
+    return { same: false, note: `file summary differs, first at ${first}` };
+  }
+  if (a.rows.length !== b.rows.length) return { same: false, note: `${a.rows.length} line rows vs ${b.rows.length}` };
+  if (JSON.stringify(a.rows) !== JSON.stringify(b.rows)) {
+    const first = a.rows.find((entry, index) => entry !== b.rows[index]);
+    return { same: false, note: `a line row differs, first at ${first}` };
+  }
+  return { same: true, note: `units ${a.units}, files ${a.files.length}, lineRows ${a.rows.length}, unreachable ${a.unreachable}, unpaired ${a.unpaired}` };
 }
 
 /// Whether the read-set walk agrees with every debug artifact's `.debug_line`.
