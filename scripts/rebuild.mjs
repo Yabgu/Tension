@@ -86,7 +86,7 @@ import { pathToFileURL } from 'node:url';
 
 import { REPO, capture, compilerBundleDigest, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
 import { PROGRAM_ALIASES } from './lib/program-aliases.mjs';
-import { GUEST_EXTENSIONS, isGuestSource, guestStem } from './lib/guest-extensions.mjs';
+import { isGuestSource, guestStem } from './lib/guest-extensions.mjs';
 import {
   readBuildRecord as readArtifactRecord,
   runtimeInputDigest,
@@ -401,7 +401,7 @@ function build() {
  */
 async function verify() {
   const rows = [];
-  const row = (link, expected, actual, status) => rows.push({ link, expected, actual, status });
+  const row = (link, expected, actual, status, detail) => rows.push({ link, expected, actual, status, detail });
 
   if (!existsSync(COMPILER_DIR)) {
     row('compiler: tree', 'a checkout', `${COMPILER_DIR} absent`, 'UNKNOWN');
@@ -496,37 +496,63 @@ async function verify() {
     );
   }
 
-  // Committed fixtures: present, and no older than a source of the same name.
+  // Committed fixtures: the bytes a test binds, against the bytes the build produces.
   //
-  // Compared by **git commit time**, not file mtime. A checkout rewrites the
-  // mtime of the files it changed and leaves the rest at their clone time, so an
-  // mtime comparison says "main-policy.wasm is older than main-policy.ts" on a
-  // tree where the commit history says the opposite — a false STALE, measured
-  // here after a rebase. Commit time is a property of the history, so it reads
-  // the same on any clone. mtime is the fallback only for an untracked file,
-  // which has no history to ask.
+  // **The direct question, not a proxy** (DL48). This row used to ask "has a source of the
+  // same name been committed since the fixture was?" — source *history* standing in for
+  // artifact *content*. The proxy answered wrongly three rounds running (DL45's commit
+  // time, DL46's spelling search, DL48's `wake-on-worker`), because a comment that names a
+  // renamed sibling moves a source's commit time without changing one byte of what the
+  // compiler emits. The fixture was correct and the row called it STALE.
+  //
+  // A quieter defect came with the proxy: a fixture was paired to a *source* by basename,
+  // and five of the fifteen (`fixtures/fiber/*-fiber.wasm`) have no source of their own —
+  // they are `PROGRAM_ALIASES` builds of a base program under different flags. The old
+  // `continue` on a null source meant those five were **never compared at all**, inside a
+  // row that printed "15 present, all current". Pairing by *artifact name* needs no source
+  // and covers all fifteen, aliases included.
+  //
+  // Three states, and the last two are different problems with different fixes:
+  //   current    the fixture is byte-identical to the artifact the build produces
+  //   behind     an artifact exists and differs — one of the two is out of date, both named
+  //   not built  no artifact for this fixture — run the chain; that is not staleness, and
+  //              conflating the two is what made this row unreadable
   const fixtures = probe('git', ['-C', REPO, 'ls-files', 'tension-core/tests/programs/fixtures']);
   if (fixtures === null) {
     row('fixtures: committed .wasm', 'enumerable', 'git ls-files failed', 'UNKNOWN');
   } else {
     const wasm = fixtures.split('\n').map((l) => l.trim()).filter((l) => l.endsWith('.wasm'));
-    let missing = 0;
-    let older = 0;
+    const behind = [];
+    const notBuilt = [];
     for (const rel of wasm) {
       const full = join(REPO, rel);
-      if (!existsSync(full)) { missing += 1; continue; }
-      const source = findSourceFor(rel);
-      if (source === null) continue;
-      const sourceRel = relative(REPO, source).split('\\').join('/');
-      if (!fixtureIsCurrent(rel, full, sourceRel, source)) older += 1;
+      if (!existsSync(full)) { notBuilt.push(`${rel}: the fixture itself is missing`); continue; }
+      const artifact = fixtureArtifact(rel);
+      if (!existsSync(artifact)) { notBuilt.push(`${rel}: no ${relative(REPO, artifact).split('\\').join('/')}`); continue; }
+      const want = captureHash(artifact);
+      const have = captureHash(full);
+      if (want !== have) {
+        // A fixture may carry its own record saying which compiler produced it — the
+        // `fixtures/debug/` pair do, because they exist so a compiler-less CI job can run
+        // the breakpoint tests. Quoting it turns "two digests differ" into the actionable
+        // fact: these bytes came from a compiler that is not the one installed.
+        const record = readBuildRecord(full);
+        const built = record && typeof record.compiler === 'string' ? ` [fixture built by ${record.compiler.slice(0, 12)}]` : '';
+        behind.push(
+          `${rel}: fixture ${have.slice(0, 12)} != build ${want.slice(0, 12)}` +
+            ` (${relative(REPO, artifact).split('\\').join('/')})${built}`,
+        );
+      }
     }
+    const problems = behind.length + notBuilt.length;
     row(
-      'fixtures: committed .wasm',
-      `${wasm.length} present, none behind its source`,
-      missing === 0 && older === 0
-        ? `${wasm.length} present, all current`
-        : `${missing} missing, ${older} behind source`,
-      missing === 0 && older === 0 ? 'PASS' : 'STALE',
+      'fixtures: committed .wasm -> build',
+      `${wasm.length} present, each equal to its build`,
+      problems === 0
+        ? `${wasm.length} current`
+        : `${wasm.length - problems} current, ${behind.length} behind, ${notBuilt.length} not built`,
+      problems === 0 ? 'PASS' : 'STALE',
+      [...behind, ...notBuilt],
     );
   }
 
@@ -637,82 +663,21 @@ async function verify() {
   return rows;
 }
 
-/// When git last committed `rel` (repo-relative, forward slashes), or null when
-/// it has no history to ask.
-function lastCommit(rel) {
-  const out = probe('git', ['-C', REPO, 'log', '-1', '--format=%ct', '--', rel]);
-  if (out === null) return null;
-  const seconds = Number(out.trim());
-  return Number.isFinite(seconds) && out.trim() !== '' ? seconds : null;
-}
-
-/// A blob's object id at `rev`, or null when that path does not exist there.
+/// The artifact a committed fixture is compared against: the build output of the same
+/// program, in the profile the fixture's own directory names.
 ///
-/// `rev:path` is the only way to ask git what a file's *content* looked like then,
-/// without checking the tree out.
-function blobAt(rev, path) {
-  const out = probe('git', ['-C', REPO, 'rev-parse', '--verify', '--quiet', `${rev}:${path}`]);
-  const id = out === null ? '' : out.trim();
-  return id.length === 0 ? null : id;
-}
-
-/// The commit the fixture was last changed in, or null when it has no history.
-function fixtureCommit(rel) {
-  const out = probe('git', ['-C', REPO, 'log', '-1', '--format=%H', '--', rel]);
-  const id = out === null ? '' : out.trim();
-  return id.length === 0 ? null : id;
-}
-
-/// Whether a committed fixture still corresponds to its source (DL45).
+/// `fixtures/debug/<name>.wasm` is a `--debug --sourceMap` build (see the README beside
+/// it), so it pairs with `build/debug/<name>.wasm`; every other fixture directory holds
+/// release bytes and pairs with `build/<name>.wasm`.
 ///
-/// **The question is "has the source's content moved since the fixture was
-/// committed?", and commit time is only a proxy for it — a proxy a rename breaks.**
-/// DL45 renamed every program from `.ts` to `.tension` with `git mv`. The bytes on
-/// both sides were unchanged, but the sources gained a commit and five fixtures
-/// gained none, so five read STALE — a check reporting current artifacts as stale is
-/// one people learn to ignore.
-///
-/// So the fallback rule is **content**: the source's blob at the commit the fixture
-/// was last changed in — looked for under every spelling the table declares, because
-/// at that commit the file may still have had its old name — compared with `HEAD`'s
-/// blob. Equal blobs answer the question exactly, and no rename can perturb it.
-///
-/// The time comparison (mtime for a fixture with no history) is still tried first,
-/// and is the only answer available to a fixture committed before its source existed.
-function fixtureIsCurrent(fixtureRel, fixturePath, sourceRel, sourcePath) {
-  const fixtureTime = lastCommit(fixtureRel);
-  const sourceTime = lastCommit(sourceRel);
-  const sourceMs = sourceTime === null ? statSync(sourcePath).mtimeMs : sourceTime * 1000;
-  const timeSaysCurrent = fixtureTime === null
-    ? statSync(fixturePath).mtimeMs >= sourceMs
-    : fixtureTime * 1000 >= sourceMs;
-  if (timeSaysCurrent) return true;
-
-  const at = fixtureCommit(fixtureRel);
-  if (at === null) return false;
-  const now = blobAt('HEAD', sourceRel);
-  if (now === null) return false;
-  const stem = sourceRel.replace(/\.(tension|ten|ts)$/, '');
-  return GUEST_EXTENSIONS.some((ext) => blobAt(at, `${stem}${ext}`) === now);
-}
-
-/// The source a fixture was built from, by basename, or null when there is none
-/// (a fixture whose source was never in the tree cannot be compared).
-///
-/// The candidates are the **declared table's**, in the table's order, so a fixture
-/// whose program was renamed is still found — and a tree that has both spellings
-/// resolves the canonical one first, exactly as the compiler does.
-function findSourceFor(fixtureRel) {
-  const base = fixtureRel.slice(fixtureRel.lastIndexOf('/') + 1).replace(/\.wasm$/, '');
-  if (!existsSync(PROGRAMS)) return null;
-  for (const entry of readdirSync(PROGRAMS, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name === 'build' || entry.name === 'fixtures') continue;
-    for (const ext of GUEST_EXTENSIONS) {
-      const candidate = join(PROGRAMS, entry.name, `${base}${ext}`);
-      if (existsSync(candidate)) return candidate;
-    }
-  }
-  return null;
+/// **Paired by artifact name, not by source.** Five of the fifteen fixtures
+/// (`fixtures/fiber/*-fiber.wasm`) are `PROGRAM_ALIASES` builds — a base program compiled
+/// again under different flags — and have no source of their own. The previous pairing
+/// looked for a source by basename, found none, and skipped them without saying so.
+function fixtureArtifact(fixtureRel) {
+  const name = `${basename(fixtureRel).replace(/\.wasm$/, "")}.wasm`;
+  const isDebug = /(^|\/)fixtures\/debug\//.test(fixtureRel);
+  return isDebug ? join(PROGRAMS, "build", "debug", name) : join(PROGRAMS, "build", name);
 }
 
 /// `capture`, but null on any failure — for probes whose failure is a row in the
@@ -734,6 +699,12 @@ function printTable(rows) {
     console.log(
       `${fit(row.link, widths[0])}  ${fit(row.expected, widths[1])}  ${fit(row.actual, widths[2])}  ${row.status}`,
     );
+  }
+  // A row that has more to say than fits in three columns says it here, after the
+  // table — the digests a fixture row names are the evidence for its verdict.
+  for (const row of rows) {
+    if (!row.detail) continue;
+    for (const line of row.detail) console.log(`    ${line}`);
   }
   const bad = rows.filter((row) => row.status !== 'PASS');
   console.log(

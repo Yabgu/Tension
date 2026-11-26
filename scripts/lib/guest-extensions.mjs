@@ -20,12 +20,11 @@
 // **Order is meaning.** The first spelling is the one a rename writes and the one the
 // deprecation notice names; `.ts` is last because it is the one being retired.
 //
-// **The order is also the search preference** (`rebuild.mjs`'s `findSourceFor` walks
-// this list), so a tree mid-rename resolves `.ten` first — which is the direction the
-// rename is going. The compiler's own copy of this list (`TensionScript/cli/index.js`)
-// still reads `[".tension", ".ten", ".ts"]`; DL46 does not edit it (§4), and the
-// disagreement is inert because nothing passes the build a bare stem — every path it
-// compiles carries its extension.
+// **The order is also the search preference.** `runner.mjs` and this module's own
+// helpers walk this list, so a tree mid-rename resolves `.ten` first. The compiler's own
+// copy (`TensionScript/cli/index.js`, `ENTRY_EXTENSIONS`) reads the same order, by the
+// user's decision that `.ten` is canonical (DL46, reordered in EXT3-prep) — the two
+// agreed by accident before that and now agree on purpose.
 
 export const GUEST_EXTENSIONS = [".ten", ".tension", ".ts"];
 
