@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: four characters, one mesh, four skins, three clips, deformed by OGRE's animation system",
   "scripts": {
-    "build": "node ../../../scripts/tensionscript.mjs game.ten --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
-    "build:debug": "node ../../../scripts/tensionscript.mjs game.ten --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
+    "build": "node ../../../scripts/tensionscript.mjs game.ten --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --stackful-backend promise",
+    "build:debug": "node ../../../scripts/tensionscript.mjs game.ten --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap --stackful-backend promise",
     "run": "node ../../../scripts/run-example.mjs --no-build",
     "start": "node ../../../scripts/run-example.mjs",
     "pack": "node ../../../scripts/pack-example.mjs ."
