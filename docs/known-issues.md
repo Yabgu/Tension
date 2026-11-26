@@ -33,9 +33,9 @@ same settings.
 **Affects** (measured at `-O3` through the session config, 2026-10-31, on
 TensionScript 0.11.4):
 
-- `guest-triangle` (`tension-ogre/tests/guest-triangle.ts`)
-- `guest-motion` (`tension-ogre/tests/guest-motion.ts`)
-- `guest-resource-errors` (`tension-ogre/tests/guest-resource-errors.ts`)
+- `guest-triangle` (`tension-ogre/tests/guest-triangle.ten`)
+- `guest-motion` (`tension-ogre/tests/guest-motion.ten`)
+- `guest-resource-errors` (`tension-ogre/tests/guest-resource-errors.ten`)
 - `examples/ogre/bouncing-bodies`, **if forced to `-O3`** — it builds today
   because it takes the session config's `-O2`.
 
@@ -141,7 +141,7 @@ pattern used as a pointer. The declared-`@unmanaged` equivalent emits
 `i32.const 4; i32.add`.
 
 **Impact in this tree.** All three view sites the flip introduced were dead at
-runtime: `motion.ts:99` (`MotionBatch.setPose`), `bones.ts:149`
+runtime: `motion.ten:99` (`MotionBatch.setPose`), `bones.ten:149`
 (`BoneBatch.write`), `ogre/index.ts:296,302,308` (`jobState`, `jobResult`,
 `jobError`). `guest-motion` failed at clause 4 (printed `1 ok`, `2 ok`, `3 ok`,
 then trapped); `guest-resource-errors` trapped with an out-of-bounds access.

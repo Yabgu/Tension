@@ -375,7 +375,7 @@ callback (`docs/architecture.md` §1, §4 **[V]** — no import matching `clock`
 a determinism regression, not a convenience.
 
 **No runtime `dt` on the frame wake.** `rt.frame()` resolves to a task whose
-payload is the literal `0` (`tension-framework/assembly/runtime/rt.ts:255-257`,
+payload is the literal `0` (`tension-framework/assembly/runtime/rt.ten:255-257`,
 `tension-core/src/main.rs:2098` **[V]**). The wake carries frame identity, never
 a delta. A guest that needs elapsed time counts its own wakes.
 
@@ -433,7 +433,7 @@ The "do not accidentally fix this" list. Each is a property that looks like an
 omission to a reader who has not met the reason.
 
 **Frame wake is identity, not time.** `rt.frame()` returns a task whose payload
-is `0` — a key, not a delta (`rt.ts:255-257` **[V]**). If a future change makes
+is `0` — a key, not a delta (`rt.ten:255-257` **[V]**). If a future change makes
 it carry elapsed time, guest simulation becomes a function of host jitter and the
 determinism claim dies silently. Any change here needs the vision, not just a
 review.

@@ -22,7 +22,7 @@ speaking one vtable ABI; nothing about a DSO capability lives in the core except
 the loader.
 
 ```
-[ BUILD ]  game.ts --tensionscript--> build/game.wasm
+[ BUILD ]  game.ten --tensionscript--> build/game.wasm
 [ RUN   ]  tension-core game.wasm [args...]
 
     session: arena · epoch · event ring · job table
@@ -125,7 +125,7 @@ builds the interpreter, the framework and every example.
 ## Debugging a guest
 
 `npm run build:debug` emits DWARF, and `tension-core --debug` makes wasmtime
-register the guest with the debugger, so an ordinary `game.ts` breakpoint
+register the guest with the debugger, so an ordinary `game.ten` breakpoint
 resolves. The recipe, the launch configurations and the failure modes are
 [`docs/debugging.md`](docs/debugging.md).
 

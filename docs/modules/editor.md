@@ -168,7 +168,7 @@ hand out before it runs.
 
 ## 5. Tests
 
-`guest-editor.ts` in `tension-framework/tests`, wired into the `framework` suite.
+`guest-editor.ten` in `tension-framework/tests`, wired into the `framework` suite.
 No canvas, no GPU:
 
 ```
@@ -263,7 +263,7 @@ must be held (`keydown`, ~150 ms, `keyup`), exactly as a scripted click must use
 ## 7. What is not here
 
 A true out-of-process play mode (the buttons toggle this process's chrome and keep
-drawing the scene), and live reload of a running document. The **core** — `document.ts`,
+drawing the scene), and live reload of a running document. The **core** — `document.ten`,
 `command.ts`, `palette.ts`, `json.ts` — still imports no `Canvas`, no `Scene` and
 nothing from the session; the shell is the only file that does, which is what keeps
 the whole of the logic testable with no display.

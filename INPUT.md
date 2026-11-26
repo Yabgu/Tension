@@ -40,7 +40,7 @@ memory without pumping or blocking. A guest compiled against v6 links and runs
 unchanged; what changed is the *meaning* of one argument (§3) and the fact that
 the edges it subscribes to are now posted from a layer instead of from a thread
 this capability started. The wire is `tension-input/include/tension_input.h`;
-`tension-framework/assembly/input.ts` is the guest SDK over it, and it too keeps
+`tension-framework/assembly/input.ten` is the guest SDK over it, and it too keeps
 its shape.
 
 ## 3. `attach` — kept for compatibility, `kind` and the token ignored

@@ -153,7 +153,7 @@ The zeroing comes first because it is the baseline that makes the later
 at `0x100` (144 B), the region table at `0x200` (12 descriptors × 24 B), the
 manifest after it (`arena.rs:51-58`). Regions follow at `0x1000`. A guest finds
 a region by arithmetic, not by a verb: `kind == index`, and no
-`session_get_region` exists (`arena.rs:414-427`, `tension-framework/assembly/runtime/arena.ts:5-12`).
+`session_get_region` exists (`arena.rs:414-427`, `tension-framework/assembly/runtime/arena.ten:5-12`).
 
 **The region table** is twelve entries of `{kind, flags, offset, size, align,
 reserved}` (`arena.rs:404-427`), written once (`write_region_table`,

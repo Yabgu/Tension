@@ -27,10 +27,10 @@ report is `debug.rs:report` (`tension-core/src/debug.rs:121-175`), on stderr:
 ```text
 [tension-core] debug: guest build/game.wasm
 [tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is
-[tension-core] debug:   source map: game.ts.map (found)
+[tension-core] debug:   source map: game.ten.map (found)
 [tension-core] debug:   symbol path: .
 [tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on
-[tension-core] debug:   lldb: breakpoint set -f game.ts -l <line>   # source line
+[tension-core] debug:   lldb: breakpoint set -f game.ten -l <line>   # source line
 [tension-core] debug:   lldb: breakpoint set -r 'game/'   # or by function name
 ```
 
@@ -97,16 +97,16 @@ breakpoint misbehaves:
   `wasm[0]::function[N]::<module>/<name>` — `-n _start_game` never matches.
 
 ```text
-(lldb) breakpoint set -f game.ts -l 11
+(lldb) breakpoint set -f game.ten -l 11
 (lldb) run
 * thread #1, name = 'tension-core', stop reason = breakpoint 1.1
-    frame #0: 0x… JIT(0x…)`game/_start_game at game.ts:11:8
+    frame #0: 0x… JIT(0x…)`game/_start_game at game.ten:11:8
 -> 11  	  print("Arguments passed to the game:");
 ```
 
 **Stepping shows native code, not wasm bytecode** — Cranelift compiles the guest
 to the machine's own instructions, so the disassembly pane shows x86-64 (or
-arm64) while the source pane shows `game.ts`. That is the same trade CPython,
+arm64) while the source pane shows `game.ten`. That is the same trade CPython,
 the JVM and V8 make, and the reason source-level breakpoints work at all.
 
 ### Where it binds, and where it cannot
@@ -162,9 +162,9 @@ Measured, not inferred. Two guests, same host flag, same lldb commands.
   (lldb) image list
   [27] 2CE5EE3E 0x000002297fed1000 JIT(0x2290234a040) (0x000002290234a040)
 
-  breakpoint set -f game.ts -l 77   -> stopped at game.ts:77   (game/main$resume)
-  breakpoint set -f game.ts -l 81   -> stopped at game.ts:81
-  breakpoint set -f game.ts -l 92   -> stopped at game.ts:92
+  breakpoint set -f game.ten -l 77   -> stopped at game.ten:77   (game/main$resume)
+  breakpoint set -f game.ten -l 81   -> stopped at game.ten:81
+  breakpoint set -f game.ten -l 92   -> stopped at game.ten:92
   ```
 
   The same stop is asserted by `a_source_breakpoint_binds_in_a_promise_guest`
@@ -197,13 +197,13 @@ error: JIT(0x…) unable to resolve a line table file address 0x… back to a
 A table from two guests, because the shape is not yet predictable. It is a **record of
 a measurement** taken before DL45, so the row keeps the spelling the tree had then
 (`.ts`, the pre-DL45 name). That guest is `tests/programs/async/async-on-main.ten`
-today — renamed twice since, `.ts` → `.tension` (DL45) → `.ten` (DL46) — and `game.ts`
+today — renamed twice since, `.ts` → `.tension` (DL45) → `.ten` (DL46) — and `game.ten`
 is the user's file, untouched by either rename.
 
 | guest | line | what it is | result |
 |---|---|---|---|
 | `examples/async-on-main/game.ts` | 54 | first statement of `base()` | binds, **no location** |
-| | 55 | second statement of `base()` | `game.ts:55:40` |
+| | 55 | second statement of `base()` | `game.ten:55:40` |
 | | 69 | first statement of `outer()` | binds, **no location** |
 | | 77 | first statement of `main()` | binds, **no location** |
 | | 80, 83, 88, 89, 91, 95 | later lines in `main()` | resolve |
@@ -223,7 +223,7 @@ What has been **ruled out**, each measured rather than assumed:
 - the guest runs to completion (exit 0, 14 transcript lines), so this is not
   the "guest never ran" case above;
 - whole-body `DW_AT_ranges` is **worse**, not better: rewriting the section to
-  one entry per body made `game.ts:80` stop resolving as well (16 unresolved
+  one entry per body made `game.ten:80` stop resolving as well (16 unresolved
   errors). The row-granular tiling is loading-bearing and must stay;
 - it is not the optimization level: both the failing and the passing example
   are built at the default `-O0`.

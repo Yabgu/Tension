@@ -229,7 +229,7 @@ adoption; that one skips when there is no display, or when
 
 The windowed suite (`TENSION_OGRE_WINDOW_TEST=1`) is the proof that this is not
 theory: every windowed fixture creates its own window through
-`tension-ogre/tests/host-window.ts` before `ogre::init`, and the pixel clauses
+`tension-ogre/tests/host-window.ten` before `ogre::init`, and the pixel clauses
 pass — including the ones that read back a frame the host's window sized.
 
 ## 4. Records, regions and the schema
@@ -347,9 +347,9 @@ win. Four are concrete:
 4. **The SDK's headline count is eleven.** `tension-framework/assembly/ogre/index.ts:1`
    says "the eleven verbs a guest may call", because eleven `@external`
    declarations live in that file (`index.ts:89-121`). Five more live in sibling
-   modules — `submit_motion` (`motion.ts:18`), `submit_bones` (`bones.ts:30`),
-   `submit_skin_matrices` (`skin.ts:30`), `create_mesh` (`mesh.ts:66`),
-   `submit_animation` (`animation.ts:27`). A reader who trusts the first line
+   modules — `submit_motion` (`motion.ten:18`), `submit_bones` (`bones.ten:30`),
+   `submit_skin_matrices` (`skin.ts:30`), `create_mesh` (`mesh.ten:66`),
+   `submit_animation` (`animation.ten:27`). A reader who trusts the first line
    undercounts by five.
 
 Two smaller ones: `tension_ogre.h:16-24` says this header documents each of the

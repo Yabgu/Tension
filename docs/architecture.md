@@ -264,7 +264,7 @@ Four properties the implementation is built to hold:
   `PlatformEvents::overflow` rather than truncating silently.
 
 **The frame wake carries no time.** `rt.frame()` resolves to a task whose payload
-is the literal `0` (`tension-framework/assembly/runtime/rt.ts:256-257`;
+is the literal `0` (`tension-framework/assembly/runtime/rt.ten:256-257`;
 `main.rs:2094-2099` pushes `payload: 0`). No dt, no timestamp, no frame number —
 the guest counts its own wakes. Note that `FrameState.frameIndex` is the
 *session's epoch counter*, explicitly not the renderer's frame number
@@ -356,7 +356,7 @@ its own accord.
 **Guest side — three imports.** `tension::platform.control`,
 `tension::platform.surface_width`, `tension::platform.surface_height`
 (`main.rs:1322`, `:1345`, `:1350`; typed wrappers in
-`tension-framework/assembly/platform.ts:38-47`). They are core services, not
+`tension-framework/assembly/platform.ten:38-47`). They are core services, not
 capabilities: a guest with no renderer still has a surface size to ask about.
 
 ## 6. The adapter boundary

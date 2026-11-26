@@ -39,7 +39,7 @@ What it is **not**:
 
 Module `tension::input`, every parameter and return `i32`, every registration
 `TENSION_VT_I32`. Signatures and guest wrappers are in `docs/abi/guest.md` and
-`tension-framework/assembly/input.ts`; this table is what each does and how it
+`tension-framework/assembly/input.ten`; this table is what each does and how it
 refuses.
 
 | # | verb | signature | what it does | refuses |

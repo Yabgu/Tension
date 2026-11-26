@@ -174,7 +174,7 @@ globals. Every byte is attributable — the three `__taskBindFamily` calls in
 three class ids plus `FAMILY_AI`. Header/table/memory/export sizes are
 unchanged; `type`, `import`, `function`, `table`, `memory`, `export`, `start`,
 `element` and `datacount` are byte-identical. Even a build with **only**
-`layout.ts` bumped moves 13 function bodies (constant baking plus the shifted
+`layout.ten` bumped moves 13 function bodies (constant baking plus the shifted
 data address), so no split of the bump restores byte-identity.
 
 **The gate for bump batches** is therefore:
@@ -196,7 +196,7 @@ own phase** — not a thing to slip into a layout bump.
 
 `tension-framework`'s `npm run build` compiles the guest against the
 **already generated** `assembly/runtime/layout.ts`. It does not invoke
-`build.sh`, which is what reads `session.json` and rewrites `layout.ts` and
+`build.sh`, which is what reads `session.json` and rewrites `layout.ten` and
 `build/session.asconfig.json`.
 
 So after changing any arena constant: run
@@ -205,9 +205,9 @@ So after changing any arena constant: run
 symptom is a `session_open` hash mismatch at run time rather than a build error.
 
 `npm test` does run `build.sh` (through `tests/run.sh`), so CI catches a stale
-`layout.ts`; a manual `npm run build` would not. That asymmetry is exactly how a
+`layout.ten`; a manual `npm run build` would not. That asymmetry is exactly how a
 stale guest survives a local loop. The generator is idempotent — re-running it
-on an up-to-date tree rewrites `layout.ts` byte-identically — so running it
+on an up-to-date tree rewrites `layout.ten` byte-identically — so running it
 twice costs nothing and is the safe default.
 
 ## "Tests pass" is evidence for the committed tree

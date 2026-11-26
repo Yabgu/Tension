@@ -27,7 +27,7 @@ path.
 | `app/shell.ts` | session, window, canvas, resize, texture reload, input attach, the close button, teardown |
 
 The split is not decorative. `theme.ts` and `painter.ts` are about *pixels*;
-`layout.ts` is about *where things go*; `hit.ts` is about *what a click lands on*.
+`layout.ten` is about *where things go*; `hit.ten` is about *what a click lands on*.
 They are separate because the bugs they prevent are separate, and each file's
 header records the measurement behind it.
 
@@ -415,7 +415,7 @@ rather than emitting into a refusal.
 
 `String.UTF8.encode` answers a **fresh `ArrayBuffer`**, so every caller that wanted
 bytes allocated once per string — and `drawText` did it once per string per frame.
-`text.ts` removes that by never asking for a buffer:
+`text.ten` removes that by never asking for a buffer:
 
     need = String.UTF8.byteLength(s)          // count
     buf.reserve(need)                         // grow only if it must
@@ -630,7 +630,7 @@ them touches the heap.
 > **Closures over `this` trap on TensionScript 0.13.2.** Use target objects —
 > `ui.onClick(id, new SaveHandler(this))` — until the compiler is fixed. The
 > editor is written this way throughout: four one-method classes at the top of
-> `apps/editor/src/main.ts`, and no closure anywhere that the framework stores.
+> `apps/editor/src/main.ten`, and no closure anywhere that the framework stores.
 
 The intended API was `ui.onClick(id, () => { … })`. **It cannot work on the
 compiler this targets** (TensionScript 0.13.2): a closure created in one module,

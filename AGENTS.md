@@ -122,7 +122,7 @@ come first; the rest is the Windows build cheat-sheet.
    - **Never a manual `load<T>`/`store<T>` where a field name will do.** A
      record is reached as `records[i].x`, a pixel as `px.r`; hand-written
      offsets belong only in a byte-level control (see
-     `examples/2d/isometric/src/bindings.ts`) or where the layout is packed and
+     `examples/2d/isometric/src/bindings.ten`) or where the layout is packed and
      cannot be a struct (`TS6408`).
    - **No `addr + i * RECORD_SIZE` in guest code.** Records are
      `@unmanaged [T *]` — the compiler supplies the stride.
@@ -268,7 +268,7 @@ the session's return value first, before it checks `open`'s.
 this boundary). A pointer crosses as a guest address, a failure is a negative
 errno, a handle is positive. No verb takes a struct by value or a string: a
 string is ptr + len, a record run is ptr + count + stride. The named wrappers in
-each example's `bindings.ts` exist to give the positional `i32`s names and to
+each example's `bindings.ten` exist to give the positional `i32`s names and to
 convert a pointer once; they do no byte work, and a wrapper that starts doing
 byte work has stopped being a wrapper.
 
@@ -502,7 +502,7 @@ grep -rnE '^\s*@(managed|unmanaged) struct' tension-framework/assembly examples/
 ```
 
 The first two may hit only where a comment names the reason: a byte-level
-control (`examples/2d/isometric/src/bindings.ts`, the independent oracle) or a
+control (`examples/2d/isometric/src/bindings.ten`, the independent oracle) or a
 packed format that cannot be a struct (name the format and the diagnostic in
 the comment). `RECORD_SIZE` should appear where a buffer is *sized*, never
 inside an index. The last should be empty — a declaration carries no storage
