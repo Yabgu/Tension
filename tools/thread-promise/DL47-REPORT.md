@@ -214,18 +214,45 @@ guests: built by the installed compiler       70 of 70 current               PAS
 docs: docs/abi/*.md                           generator --check clean        PASS
 ```
 
-The stale fixture is `tension-core/tests/fixtures/dwarf-guest/game.wasm`. That row compares
-**git commit time** of a committed `.wasm` against its source (deliberately: mtime gives
-false STALE after any rebase — the comment at `scripts/rebuild.mjs:502-509` says so). The
-rename commit touched `game.ten`, so the source now post-dates the binary.
+**Corrected by DL48 — this paragraph named the wrong fixture, for an invented reason.**
 
-It is left stale on purpose. The fixture is a **locked historical input**: its README records
-that it was built by TensionScript 0.14.0 and that its bytes stand for 0.14.1 too, and the
-bytes embed `game.ts` in `name`/`.debug_info`. Rebuilding it under today's compiler would
-replace a provenance record with a different artifact, and nothing needs it: `e2e_debug.rs`
-passes the module through untouched and names no source file. This is the false positive the
-row's own comment describes — a rename is not a rebuild. **I did not weaken the check to
-make it green.**
+The row enumerates `git ls-files tension-core/tests/programs/fixtures`. The fixture it
+actually called stale was
+**`tension-core/tests/programs/fixtures/thread/wake-on-worker.wasm`**, and the comparison
+that flagged it was **git commit time** of a committed `.wasm` against its source (mtime
+gives false STALE after any rebase, so the row used history instead).
+
+Why its source's commit time moved — two comments in `thread/wake-on-worker.ten` name
+sibling guests, and the rename correctly updated them:
+
+```diff
+-// It is the same shape as `strand-nested.ts`, with the one difference that makes
++// It is the same shape as `strand-nested.ten`, with the one difference that makes
+-// because a sleep expired. Same shape as `plain-worker.ts`, and the same
++// because a sleep expired. Same shape as `plain-worker.ten`, and the same
+```
+
+And the fixture was nevertheless **exactly right**, which is the decisive measurement:
+
+```
+build/wake-on-worker.wasm            sha256 32b809546361de1e
+fixtures/thread/wake-on-worker.wasm  sha256 32b809546361de1e   identical
+```
+
+A comment never reaches a release artifact. The row was a **false positive**: it asked
+whether the source had *changed*, when the question it means is whether the fixture is the
+bytes *the build produces*. DL48 replaced the comparison with that direct one, and with it
+found two fixtures that are genuinely behind — `fixtures/debug/main-policy.wasm` and
+`fixtures/debug/rt-guards.wasm`, both built by compiler `f97c0f03b334` and not re-pinned
+after this round's compiler change. That is a real DL47 omission, not a false positive, and
+it is DL48's finding to report rather than this report's to hide.
+
+What this paragraph originally said — `dwarf-guest/game.wasm`, and that rebuilding it would
+"replace a provenance record" — was wrong twice over: `dwarf-guest` sits under
+`tension-core/tests/fixtures/`, which this row never enumerates, and the provenance argument
+was invented to explain a verdict about a different file. The conclusion "I did not weaken
+the check to make it green" stands, but it described the wrong row: DL47 did not weaken the
+check, it mis-read it.
 
 ---
 
