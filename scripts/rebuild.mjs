@@ -518,11 +518,7 @@ async function verify() {
       const source = findSourceFor(rel);
       if (source === null) continue;
       const sourceRel = relative(REPO, source).split('\\').join('/');
-      const fixtureTime = lastCommit(rel);
-      const sourceTime = lastCommit(sourceRel);
-      const fixtureMs = fixtureTime === null ? statSync(full).mtimeMs : fixtureTime * 1000;
-      const sourceMs = sourceTime === null ? statSync(source).mtimeMs : sourceTime * 1000;
-      if (fixtureMs < sourceMs) older += 1;
+      if (!fixtureIsCurrent(rel, full, sourceRel, source)) older += 1;
     }
     row(
       'fixtures: committed .wasm',
@@ -648,6 +644,56 @@ function lastCommit(rel) {
   if (out === null) return null;
   const seconds = Number(out.trim());
   return Number.isFinite(seconds) && out.trim() !== '' ? seconds : null;
+}
+
+/// A blob's object id at `rev`, or null when that path does not exist there.
+///
+/// `rev:path` is the only way to ask git what a file's *content* looked like then,
+/// without checking the tree out.
+function blobAt(rev, path) {
+  const out = probe('git', ['-C', REPO, 'rev-parse', '--verify', '--quiet', `${rev}:${path}`]);
+  const id = out === null ? '' : out.trim();
+  return id.length === 0 ? null : id;
+}
+
+/// The commit the fixture was last changed in, or null when it has no history.
+function fixtureCommit(rel) {
+  const out = probe('git', ['-C', REPO, 'log', '-1', '--format=%H', '--', rel]);
+  const id = out === null ? '' : out.trim();
+  return id.length === 0 ? null : id;
+}
+
+/// Whether a committed fixture still corresponds to its source (DL45).
+///
+/// **The question is "has the source's content moved since the fixture was
+/// committed?", and commit time is only a proxy for it — a proxy a rename breaks.**
+/// DL45 renamed every program from `.ts` to `.tension` with `git mv`. The bytes on
+/// both sides were unchanged, but the sources gained a commit and five fixtures
+/// gained none, so five read STALE — a check reporting current artifacts as stale is
+/// one people learn to ignore.
+///
+/// So the fallback rule is **content**: the source's blob at the commit the fixture
+/// was last changed in — looked for under every spelling the table declares, because
+/// at that commit the file may still have had its old name — compared with `HEAD`'s
+/// blob. Equal blobs answer the question exactly, and no rename can perturb it.
+///
+/// The time comparison (mtime for a fixture with no history) is still tried first,
+/// and is the only answer available to a fixture committed before its source existed.
+function fixtureIsCurrent(fixtureRel, fixturePath, sourceRel, sourcePath) {
+  const fixtureTime = lastCommit(fixtureRel);
+  const sourceTime = lastCommit(sourceRel);
+  const sourceMs = sourceTime === null ? statSync(sourcePath).mtimeMs : sourceTime * 1000;
+  const timeSaysCurrent = fixtureTime === null
+    ? statSync(fixturePath).mtimeMs >= sourceMs
+    : fixtureTime * 1000 >= sourceMs;
+  if (timeSaysCurrent) return true;
+
+  const at = fixtureCommit(fixtureRel);
+  if (at === null) return false;
+  const now = blobAt('HEAD', sourceRel);
+  if (now === null) return false;
+  const stem = sourceRel.replace(/\.(tension|ten|ts)$/, '');
+  return GUEST_EXTENSIONS.some((ext) => blobAt(at, `${stem}${ext}`) === now);
 }
 
 /// The source a fixture was built from, by basename, or null when there is none
