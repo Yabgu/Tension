@@ -4,8 +4,8 @@
 |---|---|
 | `~/work/Tension` | `feat/dl45-ten-extension` off `develop` (`11dd7c6`) — tip **`b980b8c`** |
 | `~/work/TensionScript-a2` | `feat/dl45-ten-extension` off `develop` (`f045fc5a`) — tip **`3aa5cb80`** |
-| CI (Tension) | **`45848693310` success** — `E2E debug` |
-| CI (TensionScript) | **`45849179499`** — every Compiler job green (incl. Windows), `Gate 4 (threads)` green, **`Coverage` failed on heap exhaustion**; see §8 |
+| CI (Tension) | **`45858425940` success** — `E2E debug` (`45848693310` was green at the rename tip too) |
+| CI (TensionScript) | **`45858413491` success — all 17 jobs**, `Coverage` included; the two red attempts before the fix are §9 |
 | installed compiler | `96c7d1c0825a` → **`f97c0f03b334`** (the table is a compiler change — §4) |
 | `--check` | **9/9 PASS** at the tip; runtime digests `dc2cf96275ae` → **`fefddc6e7a0b`** (`src/debug.rs` is an input) |
 | guests / artifacts / records | **30** sources → **35** artifacts → **70** records, plus **15** committed fixture records |
@@ -297,32 +297,35 @@ it; a grammar-only language id silences it by removing completion and hover too.
 | census | **71/82 pass, 0 skipped, 11 no-source**, no stale-engine warning |
 | guests | **30 sources / 35 artifacts / 70 records / 15 fixtures**, no new program |
 
-### One CI job was red: `Coverage`, and it was mine
+### `Coverage` was red twice, and it was mine — now green
 
-`Coverage` failed on **both** attempts at this tip (`45849179499`, `45855042633`) with
-JavaScript heap exhaustion — `Ineffective mark-compacts near heap limit`, 4 084 MB, exit
-134 — in the `Collect coverage` step, **after every suite had passed** (the last
-`[ SUCCESS ] 71 checks` is `test:atomics`, the last script in `npm test`). It was green
-on `develop` (DL44's run `45693396996`), and the only thing this branch adds to that run
-is `tests/cli/guest-extension.js`.
+The first two attempts at this tip (`45849179499`, `45855042633`) failed with JavaScript
+heap exhaustion — `Ineffective mark-compacts near heap limit`, 4 084 MB, exit 134 — in the
+`Collect coverage` step, **after every suite had passed** (the last `[ SUCCESS ] 71 checks`
+is `test:atomics`, the last script in `npm test`). It was green on `develop` (DL44's
+`45693396996`), and the only thing this branch adds to that run is
+`tests/cli/guest-extension.js`.
 
-**What it costs.** A compile loads the whole 20 MB compiler bundle, so **one child's
-coverage JSON is ~7.8 MB**. The test spawns six compiles; measured with
-`c8 --temp-directory`, its contribution to the corpus was **14 files / 46 MB** against
-**2 files / 264 KB** once the children stop writing into c8's directory. That is the
-whole delta, and it is enough to tip a job that is already near the bound.
+**What it costs, measured.** A compile loads the whole 20 MB compiler bundle, so **one
+child's coverage JSON is ~7.8 MB**. Measured with `c8 --temp-directory`:
 
-**The fix, and why it is a scratch directory.** Deleting `NODE_V8_COVERAGE` for the
-children does not work: c8 re-injects the real temp directory into any descendant that
+| | files | bytes |
+|---|---|---|
+| test's contribution, first version | 14 | **46 MB** |
+| test's contribution, final version | 2 | **264 KB** |
+
+**Why the fix is a scratch directory and not a deletion.** Deleting `NODE_V8_COVERAGE` for
+the children does not work: c8 re-injects the real temp directory into any descendant that
 has no such variable — measured, a grandchild of a child that had deleted it reported the
 path again. The empty string writes nothing on Node 26 (measured: 0 files) but that is one
-version's behaviour, and **CI runs Node 24, which is not installable here**. A directory
-the test creates and deletes is the one form whose meaning does not depend on which Node
-reads it: the bytes land where c8 does not look, and `process.on("exit")` removes them.
+version's behaviour, and **CI runs Node 24, which is not installable here** — so it is not
+a contract. A directory the test creates and deletes is the one form whose meaning does not
+depend on which Node reads it: the bytes land where c8 does not look, and
+`process.on("exit")` removes them.
 
-**Reproduced red locally and green after, at the default heap** — `npx c8 -- npm test`,
-the same command the job runs. The result is in §12; it is the measurement, not the
-argument, that this section is claiming.
+**Proven in the environment that failed:** `Coverage` in **`45858413491` is success**, and
+its log carries `[ SUCCESS ] guest-extension: 5 checks`. The same line appears in
+`Compiler (windows, node current)`, so the test also runs on Windows.
 
 ## 10. Two regressions I caused and fixed, both found by running the suites
 
@@ -352,9 +355,12 @@ my change left the comparison exactly as it was. It is not this round's to fix.
 TensionScript-a2  f12f4c68  cli: guest entry sources may be .tension, .ten, or .ts — and nothing else
 TensionScript-a2  2473e52a  types: the guest language's declaration surface, and the editor recipe
 TensionScript-a2  3aa5cb80  tests: drop an unused import the lint gate refuses
+TensionScript-a2  67041717  tests: the CLI test's compiles do not join the coverage corpus
+TensionScript-a2  368742df  tests: the CLI test's compiles write their coverage to a scratch directory
 Tension           167a863  guests: the programs are .tension, and the tree says so everywhere it spells them
 Tension           5e79e1a  rebuild: the fixture row asks whether the source's content moved, not when
 Tension           b980b8c  debug, census: the tools that name a guest file follow the rename too
+Tension           7c0276d  docs: DL45 report — the table, the rename, the declarations, and the coverage job measured
 ```
 
 `5e79e1a` is worth its own line: after the rename, `--check` read 8/9 with five fixtures
@@ -372,8 +378,13 @@ change still reads STALE — measured: one appended comment, committed, gave
   associations and the declaration program in place is **not measured**. The 13→3 count is
   `tsc` on a `.ts` copy, which is the closest thing to the server's answer that can be
   produced without a GUI, and it is not the same thing.
-- **The `Coverage` job's rerun** — recorded below when it finished; if it OOMs again the
-  cause is not established by this round.
+- **A full local `npx c8 -- npm test` at the default heap after the fix was started but not
+  finished** (it was still in its last third when this report was written: 17 suites green,
+  1.7 GB of corpus). The CI job *is* finished, at the same command and a default heap, and
+  it passed — so the claim rests on `45858413491`, not on the local run.
+- **Node 24 was never run locally** — this host has only Node 26. That is why the fix chose
+  a form whose behaviour does not depend on the version, instead of the empty-string
+  spelling that happened to work here.
 - **Windows.** a2's six Compiler jobs include Windows and are green, which runs the *CLI*
   suite there; Tension's Rust tests, the census, and the debugger suite are Ubuntu-only
   (WIN23 is the round that converges Windows).
