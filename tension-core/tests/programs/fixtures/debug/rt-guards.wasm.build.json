@@ -1,5 +1,5 @@
 {
-  "compiler": "035b816380d36aa99d5c58f3955931e478a7e9e3baf9b4fb0d8ec860ba51133b",
+  "compiler": "68aa84d2944f59af068cc4b25e7cb57ce572d15f1e6dfdeecb06dec49d97b121",
   "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "async/rt-guards.ten",
   "flags": [
@@ -9,6 +9,8 @@
     "release",
     "--optimizeLevel",
     "0",
+    "--stackful-backend",
+    "promise",
     "--debug",
     "--sourceMap"
   ],

@@ -57,7 +57,16 @@ fn fiber_guest() -> PathBuf {
 /// `wake-on-worker` is a Promise-backend guest: its record is absent, which by
 /// the format's own rule means `continuation`.
 fn continuation_guest() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/programs/fixtures/thread/wake-on-worker.wasm")
+    // **`suspend-serve`, not `wake-on-worker`** (DL51). The latter was this test's
+    // "continuation guest" and was never one: built with no backend flag it got the
+    // *promise* lowering, and it read as continuation only because the old encoding was
+    // "no section ⇒ continuation". DL51 writes the section for every non-continuation
+    // choice, so the mislabel became visible — the host said `built for the promise
+    // backend` and this test failed, correctly.
+    //
+    // `suspend-serve` is built with `THREAD_FLAGS`, which names `continuation`, so it is
+    // the guest this test says it is.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/programs/fixtures/thread/suspend-serve.wasm")
 }
 
 /// One run of the real binary: `(status, stdout, stderr)`.

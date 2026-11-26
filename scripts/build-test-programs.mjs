@@ -99,6 +99,13 @@ const DEBUG_FLAGS = ["--debug", "--sourceMap"];
  *   --importMemory        the memory is the host's, not the module's
  *   --enable threads      atomics; implied by --sharedMemory, stated anyway
  *   --enable stack-switching  a `$starts` table to serve requests from
+ *   --stackful-backend continuation
+ *                         **explicit since DL51**, because the default no longer means
+ *                         this: `auto` resolves to fiber. These programs' assertions are
+ *                         about the continuation executor, so they must name it — and
+ *                         naming it is all they need, since choosing the backend enables
+ *                         its wasm feature (DL51 §1.3), which is why `--enable` above is
+ *                         now redundant-but-harmless rather than required.
  *   --runtime incremental     the default allocator, as every example uses
  *   --maximumMemory 256   a shared memory cannot grow its reservation, so both
  *                         bounds are fixed; 256 pages is 16 MiB, enough for two
@@ -114,18 +121,18 @@ const THREAD_FLAGS = [
   "--maximumMemory", "256",
   "--enable", "threads",
   "--enable", "stack-switching",
+  "--stackful-backend", "continuation",
   "--optimizeLevel", "0",
 ];
 
 /**
- * The wake proof's flags: `THREAD_FLAGS` **minus `--enable stack-switching`**.
+ * The wake proof's flags: `THREAD_FLAGS` **minus the stackful choice**.
  *
- * The difference is the point of the program. `wake-on-worker` parks on a real
- * `await` under the **Promise** backend, so its shell is the one that runs
- * without stack switching — which is what lets the guard run on any engine, and
- * in a CI job that has no reason to care which backend is present. Built with
- * `THREAD_FLAGS` it would measure the stackful shell instead and the test would
- * be asserting a different mechanism under the same name.
+ * The difference is still the point of the program: the guard must run on any engine, with
+ * no wasm proposal configured. **Since DL51 it has to say which lowering that is**, because
+ * "no stack switching" stopped selecting one — `auto` means fiber now (see `PROMISE_FLAGS`),
+ * and this file is a *library* module (an `await`, no exported `main`), which a stackful
+ * shell refuses.
  */
 const WAKE_FLAGS = [
   "--runtime", "incremental",
@@ -199,6 +206,10 @@ const ASYNC_ON_MAIN_FLAGS = [
   "--runtime", "incremental",
   "--target", "release",
   "--enable", "stack-switching",
+  // Explicit since DL51: the default is `auto` → fiber, and these programs assert the
+  // continuation executor. See `THREAD_FLAGS` for why the `--enable` above is now
+  // redundant-but-harmless.
+  "--stackful-backend", "continuation",
   "--exportStart", "__start",
   "--optimizeLevel", "0",
 ];
@@ -213,6 +224,28 @@ const PLAIN_FLAGS = [
   "--target", "release",
   "--optimizeLevel", "0",
 ];
+
+/**
+ * **The promise lowering, named** (DL51).
+ *
+ * Two kinds of program need it and neither can use a stackful shell:
+ *
+ *   a library module   an `await` in a function and no exported `main`. A stackful shell
+ *                       has one root — the continuation `__start` installs — so fiber and
+ *                       continuation both refuse it by name ("the stackful backend requires
+ *                       an exported main"). Measured while landing DL51: `rt-guards`,
+ *                       `wake-on-worker`, `two-waiters-late` and `promise-fallback` all fail
+ *                       without it.
+ *   a program whose   `async-main-promise` and `promise-fallback` exist to measure the
+ *   subject *is* the   promise path. Before DL51 they got it by saying nothing; now that
+ *   promise path      "nothing" means fiber, saying it is the only way to keep measuring
+ *                       what the name claims.
+ *
+ * `auto` never resolves here, by design: the promise lowering is not a choice a user should
+ * arrive at by omission.
+ */
+const PROMISE_FLAGS = [...PLAIN_FLAGS, "--stackful-backend", "promise"];
+const PROMISE_THREAD_FLAGS = [...WAKE_FLAGS, "--stackful-backend", "promise"];
 
 /**
  * A program's flag list, by **basename** — the file name without its extension.
@@ -241,14 +274,14 @@ const PROGRAMS = {
   "stack-switch-resume": ASYNC_ON_MAIN_FLAGS,
   "task-entry": ASYNC_ON_MAIN_FLAGS,
   "start-game-entry": ASYNC_ON_MAIN_FLAGS,
-  "promise-fallback": PLAIN_FLAGS,
+  "promise-fallback": PROMISE_FLAGS,
   // The Promise backend's **entry**: an `async main` with no stack switching.
   // `PLAIN_FLAGS` plus `--exportStart __start` is the whole point of the
   // program — with `--enable stack-switching` it would measure the stackful
   // shell instead, so it is named here rather than inheriting the folder's
   // default, and its entry is an export rather than a start section because
   // that is the shape the SDK builds (and the one the host calls).
-  "async-main-promise": [...PLAIN_FLAGS, "--exportStart", "__start"],
+  "async-main-promise": [...PROMISE_FLAGS, "--exportStart", "__start"],
   "count": THREAD_FLAGS,
   "spawn-join": THREAD_FLAGS,
   "spawn-refusals": THREAD_FLAGS,
@@ -256,11 +289,11 @@ const PROGRAMS = {
   // The wake path's guard (`tests/threads.rs`): a park on a worker that a
   // completion posted *before* it resumes. Named here because it is the one
   // thread program that must **not** get the folder default — see `WAKE_FLAGS`.
-  "wake-on-worker": WAKE_FLAGS,
+  "wake-on-worker": PROMISE_THREAD_FLAGS,
   // DL22's ordering probe: the same two-waiter shape, run twice — with the
   // completion posted after both parks and (the mirror) before them. Same flags as
   // the wake guard, for the same reason.
-  "two-waiters-late": WAKE_FLAGS,
+  "two-waiters-late": PROMISE_THREAD_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
   // Built from `async/async-on-main.ten` — see `ALIASES` below.
   "async-on-main-fiber": ASYNC_ON_MAIN_FIBER_FLAGS,
@@ -270,7 +303,7 @@ const PROGRAMS = {
   "spawn-entry-async-fiber": FIBER_FLAGS,
   // DL41: a served body that parks, on the fiber backend.
   "suspend-serve-fiber": FIBER_FLAGS,
-  "rt-guards": PLAIN_FLAGS,
+  "rt-guards": PROMISE_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,
   "main-step-replaced": ASYNC_ON_MAIN_FLAGS,
@@ -293,7 +326,12 @@ const ALIASES = Object.fromEntries(
  * nobody decided how to build.
  */
 const FOLDER_FLAGS = {
-  "conformance": PLAIN_FLAGS,
+  // **`PROMISE_FLAGS`, not `PLAIN_FLAGS`** (DL51). These probes import the framework's
+  // `print`, whose io path carries an `await` — so the program *does* suspend even though
+  // it contains no `await` of its own, and a stackful shell refuses it for want of an
+  // exported `main`. Before DL51 they got the promise lowering by saying nothing; "nothing"
+  // means fiber now, so they say it.
+  "conformance": PROMISE_FLAGS,
   "async": ASYNC_ON_MAIN_FLAGS,
   "policy": ASYNC_ON_MAIN_FLAGS,
   "thread": THREAD_FLAGS,

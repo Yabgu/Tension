@@ -752,11 +752,17 @@ fn thread_boot(
         .map_err(|_| anyhow::anyhow!("the module exports no `__start() -> i32`"))?;
 
     let started = match executor {
-        tension_core::fiber::Backend::Continuation => start.call(&mut *store, ())?,
         // **The fiber backend runs the same entry, on a fiber.** Everything above
         // (carve, arena, verify) is unchanged: those are calls that cannot suspend.
         // The difference is only what happens when the guest parks — the fiber
         // hands control back to the executor instead of unwinding the wasm call.
+        // **The promise lowering runs the plain entry too.** Its suspensions are calls
+        // the host answers through the promise seam and its own `__asyncPump` loop drives
+        // the state machine, so there is no fiber to publish and nothing to resume from
+        // here — the same path as continuation, for a different reason.
+        tension_core::fiber::Backend::Continuation | tension_core::fiber::Backend::Promise => {
+            start.call(&mut *store, ())?
+        }
         tension_core::fiber::Backend::Fiber => run_on_fiber(
             &mut *store,
             *instance,
@@ -1656,8 +1662,9 @@ fn parse_executor(value: &str) -> Result<tension_core::fiber::Backend, String> {
     match value {
         "fiber" => Ok(tension_core::fiber::Backend::Fiber),
         "continuation" => Ok(tension_core::fiber::Backend::Continuation),
+        "promise" => Ok(tension_core::fiber::Backend::Promise),
         other => Err(format!(
-            "`--executor {other}`: expected `fiber` or `continuation`"
+            "`--executor {other}`: expected `fiber`, `continuation` or `promise`"
         )),
     }
 }
@@ -2148,6 +2155,56 @@ fn main() -> anyhow::Result<()> {
             tension_core::fiber::Mismatch { guest: guest_backend, executor }
         );
         std::process::exit(2);
+    }
+    // ── what the artifact requires of this host ─────────────────────────────
+    //
+    // **The declaration, checked before the module is instantiated** (DL51). The backend
+    // pairing above is one requirement of three; the other two — the wasm features the
+    // module needs configured, and the platform its target class allows — are asked here
+    // so a mismatch is a named refusal rather than a wasmtime error from inside
+    // `Engine::new`/instantiation, which names neither side.
+    //
+    // What this host **provides** is read, not assumed: `supports_continuations()` is the
+    // answer `async_backend::build` got from wasmtime, so a host where the feature was
+    // refused refuses a continuation guest by name instead of failing to compile it.
+    if let Some(requires) = tension_core::fiber::Requires::of(&module_bytes) {
+        // The two sections must agree; if they do not, the artifact is not the one the
+        // compiler writes, and guessing which half to believe is how a wrong answer gets
+        // a green run.
+        if requires.backend != guest_backend {
+            eprintln!(
+                "tension-core: this guest's `tension.requires` says backend `{}` but its \
+                 `tension.stackful-backend` says `{}` — refusing by name, the artifact is \
+                 inconsistent and nothing was run",
+                requires.backend.name(),
+                guest_backend.name(),
+            );
+            std::process::exit(2);
+        }
+        let provision = tension_core::fiber::Provision {
+            backend: executor,
+            continuations: async_backend.supports_continuations(),
+            shared_memory: true,
+            platform: std::env::consts::OS,
+        };
+        let unmet = requires.unmet_against(provision);
+        if !unmet.is_empty() {
+            eprintln!(
+                "tension-core: {}",
+                tension_core::fiber::UnmetRequirement { requires, provision, unmet }
+            );
+            std::process::exit(2);
+        }
+        logging::log(
+            logging::Level::Info,
+            "core",
+            &format!(
+                "requires: backend {} target {} features [{}] — met",
+                requires.backend.name(),
+                requires.target.name(),
+                requires.features.join(",")
+            ),
+        );
     }
     logging::log(
         logging::Level::Info,
