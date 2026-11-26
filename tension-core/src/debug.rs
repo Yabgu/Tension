@@ -52,6 +52,13 @@ pub struct GuestDebugInfo {
     /// not built with `--debug --sourceMap` at all, and the user needs to know
     /// which of the two they are looking at.
     pub source_map: Option<String>,
+    /// The guest source file **as the artifact names it**, or `None` when the
+    /// artifact carries no source name. Read out of the module's own bytes rather
+    /// than assumed from the guest's file name, because the extension is the thing
+    /// a rename changes: `.ten` is canonical (DL46), `.tension` and `.ts` are both
+    /// accepted, and a hint that names the wrong one asks lldb for a file no line
+    /// table has.
+    pub source_file: Option<String>,
 }
 
 /// Scan the guest's section headers for the custom sections a debugger cares
@@ -64,6 +71,7 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
         dwarf: false,
         names: false,
         source_map: None,
+        source_file: None,
     };
     let Ok(bytes) = std::fs::read(path) else {
         return info;
@@ -112,7 +120,30 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
         }
         p = end;
     }
+    info.source_file = source_file_in(&bytes, path);
     info
+}
+
+/// The guest source's file name as the artifact carries it, e.g. `rt-guards.ten`.
+///
+/// **Derived, not assumed.** The artifact embeds its source path — as a UTF-16 string
+/// in the data section for a release build, and as UTF-8 file names in `.debug_line`
+/// for a debug build — so the answer is in the bytes. A hint pinned to one extension
+/// is wrong for every guest built under another: DL44 pinned `.ts` and DL45 pinned
+/// `.tension`, and each was correct only until the next rename.
+///
+/// Longest extension first, and that order is load-bearing: `x.ten` is a **prefix** of
+/// `x.tension`, so a naive search for `.ten` would answer `.ten` for a `.tension`
+/// guest.
+fn source_file_in(bytes: &[u8], guest: &Path) -> Option<String> {
+    let stem = guest.file_stem()?.to_string_lossy().into_owned();
+    for ext in [".tension", ".ten", ".ts"] {
+        let needle = format!("{stem}{ext}");
+        if bytes.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+            return Some(needle);
+        }
+    }
+    None
 }
 
 /// The `--debug` startup report, on stderr like every other host event.
@@ -156,22 +187,23 @@ pub fn report(guest: &Path, info: &GuestDebugInfo, symbol_paths: &[PathBuf]) {
     }
 
     // The module/function hint keeps the example's own naming, which is what
-    // `asc` derives from the source path: `<dir>/<file>.tension` -> `<dir>/<export>`.
+    // `asc` derives from the source path: `<dir>/<file>.ten` -> `<dir>/<export>`.
     let hint = guest
         .file_stem()
         .map(|stem| format!("{}/", stem.to_string_lossy()))
         .unwrap_or_default();
-    // **The canonical guest spelling** (DL45). This line is a convenience for the
-    // person about to paste an lldb command, and the extension it prints has to be
-    // the one the artifact's line table carries — renaming a guest moves the DWARF
-    // file name with it, so a hint pinned to `.ts` would name a file that no longer
-    // exists and `breakpoint set -f` would bind nowhere. `.tension` is the spelling
-    // a tree is converging on and the compiler accepts it; a guest still spelled
-    // `.ts` is the deprecation window's business, not this hint's.
-    let source_hint = guest
-        .file_stem()
-        .map(|stem| format!("{}.tension", stem.to_string_lossy()))
-        .unwrap_or_default();
+    // **The file the artifact actually names** (DL46). `info.source_file` is read out of
+    // the module, so this hint is right for `.ten`, for a guest still spelled
+    // `.tension`, and for one still on `.ts` — which is what a hint for pasting into
+    // lldb has to be. The `.ten` fallback covers an artifact that carries no source
+    // name at all, where any guess is as good as another and the canonical spelling is
+    // the least wrong one.
+    let source_hint = info.source_file.clone().unwrap_or_else(|| {
+        guest
+            .file_stem()
+            .map(|stem| format!("{}.ten", stem.to_string_lossy()))
+            .unwrap_or_default()
+    });
     eprintln!("[tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on");
     for path in symbol_paths {
         eprintln!(
