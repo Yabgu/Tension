@@ -1,8 +1,10 @@
 // **What a guest source may be spelled** — one table, two scripts.
 //
-// `.tension` is canonical, `.ten` is the short spelling, `.ts` is accepted during a
-// deprecation window so a tree that has not renamed yet keeps building. Anything else
-// is refused by the compiler **by name**, with this list in the message.
+// `.ten` is canonical (DL46, the user's choice: "`.tension` is too long i think .ten is
+// unambigious enough to me"). `.tension` — the spelling DL45 chose — stays accepted so a
+// tree that has not renamed yet keeps building, and `.ts` stays accepted during its
+// deprecation window. Anything else is refused by the compiler **by name**, with this
+// list in the message.
 //
 // Kept in its own module for the reason `program-aliases.mjs` is: **two scripts need
 // it and they must agree.** `scripts/build-test-programs.mjs` discovers sources, and
@@ -17,8 +19,15 @@
 //
 // **Order is meaning.** The first spelling is the one a rename writes and the one the
 // deprecation notice names; `.ts` is last because it is the one being retired.
+//
+// **The order is also the search preference** (`rebuild.mjs`'s `findSourceFor` walks
+// this list), so a tree mid-rename resolves `.ten` first — which is the direction the
+// rename is going. The compiler's own copy of this list (`TensionScript/cli/index.js`)
+// still reads `[".tension", ".ten", ".ts"]`; DL46 does not edit it (§4), and the
+// disagreement is inert because nothing passes the build a bare stem — every path it
+// compiles carries its extension.
 
-export const GUEST_EXTENSIONS = [".tension", ".ten", ".ts"];
+export const GUEST_EXTENSIONS = [".ten", ".tension", ".ts"];
 
 /** The canonical spelling, for messages and for the rename. */
 export const GUEST_EXTENSION = GUEST_EXTENSIONS[0];
@@ -31,7 +40,8 @@ export const GUEST_EXTENSION_DEPRECATED = ".ts";
  *
  * Longest-first, so a file is never claimed by a suffix of the extension it actually
  * has: `.tension` and `.ten` share a prefix, and a short-circuiting `startsWith` over
- * the table would call `x.ten` a `.tension` file.
+ * the table would call `x.ten` a `.tension` file — which is also why the longest-first
+ * loop below is not an optimisation.
  */
 export function guestExtensionOf(file) {
   let found = null;

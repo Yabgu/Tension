@@ -565,7 +565,7 @@ async function verify() {
     if (statSync(artifact).mtimeMs < statSync(source).mtimeMs) stale += 1;
   }
   row(
-    'guests: tests/programs/**/*.tension → build/*.wasm',
+    'guests: tests/programs/**/*.ten → build/*.wasm',
     `${artifacts.length} built after source`,
     absent === 0 && stale === 0 ? `${artifacts.length} current` : `${absent} absent, ${stale} stale`,
     artifacts.length > 0 && absent === 0 && stale === 0 ? 'PASS' : 'STALE',

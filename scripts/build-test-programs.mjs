@@ -12,7 +12,7 @@
 //
 // `-O0` is a *choice*: it builds fastest, keeps the artifacts small, and leaves
 // the line table unperturbed in the debug builds. It is no longer a workaround
-// for the optimizer. The pin at `150a6e97` compiles `async/schedule-order.tension`
+// for the optimizer. The pin at `150a6e97` compiles `async/schedule-order.ten`
 // at -O1, -O2 and -O3, and the compiler repo's `tests/async/optimize.js` pins a
 // three-line `await` at every level. Before that pin, -O1 aborted in `dce`
 // (`BinaryenResumeWithHandlers` built handlers but no sent types) and -O2 in
@@ -261,7 +261,7 @@ const PROGRAMS = {
   // the wake guard, for the same reason.
   "two-waiters-late": WAKE_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
-  // Built from `async/async-on-main.tension` — see `ALIASES` below.
+  // Built from `async/async-on-main.ten` — see `ALIASES` below.
   "async-on-main-fiber": ASYNC_ON_MAIN_FIBER_FLAGS,
   // DL40: the three cross-store programs on the fiber backend.
   "spawn-join-fiber": FIBER_FLAGS,
@@ -304,7 +304,7 @@ const FOLDER_FLAGS = {
 /** Every guest source under `programs/`, as repo-relative paths, sorted.
  *
  * "Guest source" is the declared table's question, not this file's: a program may be
- * spelled `.tension` (canonical), `.ten`, or `.ts`, and `scripts/lib/guest-extensions.mjs`
+ * spelled `.ten` (canonical), `.tension`, or `.ts`, and `scripts/lib/guest-extensions.mjs`
  * is the one place that list lives. */
 function collect(dir, prefix = "") {
   const found = [];
@@ -367,7 +367,7 @@ function sameFlags(a, b) {
 }
 // **The work list: one entry per artifact**, which is one per source plus the
 // aliases. An alias names its own source, so `async-on-main-fiber.wasm` is built
-// from `async/async-on-main.tension` and nothing else has to know it exists.
+// from `async/async-on-main.ten` and nothing else has to know it exists.
 const work = sources.map((rel) => {
   const name = guestStem(rel.split("/").pop());
   const folder = rel.includes("/") ? rel.split("/")[0] : "";
@@ -431,6 +431,17 @@ for (const { rel, name, flags } of work) {
   // improvement of the same kind — a flag edit is invisible to an mtime test in
   // exactly the way a compiler edit was.
   const record = readRecord(wasm);
+  // **`record.source === rel` is the fourth thing the skip must know** (DL46). The
+  // other three — mtime, compiler, flags — cannot see a rename: `git mv` preserves the
+  // file's mtime, so a tree that renamed every program would find all 35 artifacts "up to
+  // date" and every record still naming the path that no longer exists. Measured before
+  // this line existed: `0 built, 35 up to date, 35 total`, with
+  // `record.source` still `thread/wake-on-worker.tension`.
+  //
+  // This is the same class of gap DL45 closed for flags: a record states what produced an
+  // artifact, and a skip test that ignores any part of what the record states is a skip
+  // test that can be wrong. `.ten` naming `.tension` is wrong even though the bytes are
+  // right, because the *record's job* is to name the source.
   const upToDate =
     !force &&
     existsSync(wasm) &&
@@ -438,6 +449,7 @@ for (const { rel, name, flags } of work) {
     identity.hash !== null &&
     record !== null &&
     record.compiler === identity.hash &&
+    record.source === rel &&
     sameFlags(record.flags, usedFlags);
   if (upToDate) {
     ++skipped;
