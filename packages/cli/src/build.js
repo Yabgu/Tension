@@ -173,7 +173,7 @@ export function buildOnce(ctx, { debug = false, quiet = false } = {}) {
     step(`tension: built ${short(ctx.projectDir, ctx.paths.wasm)} ` +
       `(${bytes(compiled.bytes)})${volume ? ` + ${short(ctx.projectDir, volume.path)} ` +
       `(${bytes(volume.bytes)})` : ''} in ${elapsed} ms`);
-    if (graph.wrote) step(`tension: emitted src/graph.generated.ts (${graph.bytes} bytes)`);
+    if (graph.wrote) step(`tension: emitted src/graph.generated.ten (${graph.bytes} bytes)`);
   }
   return { ok: true, wasm: compiled.bytes, volume, elapsed };
 }

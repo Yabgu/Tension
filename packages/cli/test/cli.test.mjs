@@ -75,7 +75,7 @@ test('renderer enum, defaults and limits match the schema', () => {
 
 test('an empty config is the documented default project', () => {
   const config = validateConfig({}, { projectName: 'My Game' });
-  assert.equal(config.entry, 'src/main.ts');
+  assert.equal(config.entry, 'src/main.ten');
   assert.equal(config.renderer, '2d');
   assert.deepEqual(config.window, { width: 1280, height: 720, title: 'My Game' });
   assert.equal(config.memory.initialPages, 200);

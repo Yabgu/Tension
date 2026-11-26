@@ -4,7 +4,7 @@
 // Two steps, because a guest cannot read a file at run time:
 //
 //   1. turn the `default_2d` graph blob into a TypeScript literal it can carry
-//      (`src/graph.generated.ts`), read from the same .t2dg the build compiled
+//      (`src/graph.generated.ten`), read from the same .t2dg the build compiled
 //      the adapter against;
 //   2. compile the guest with TensionScript.
 //
@@ -73,7 +73,7 @@ const generated = renderGraphBlobModule({
   ],
 });
 
-const outPath = join(exampleDir, 'src', 'graph.generated.ts');
+const outPath = join(exampleDir, 'src', 'graph.generated.ten');
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, generated);
 console.log(`${RUNNER}: ${blob.length} bytes -> ${relative(exampleDir, outPath)}`);

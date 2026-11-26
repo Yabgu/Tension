@@ -1,5 +1,5 @@
 /**
- * @fileoverview The `graph.generated.ts` module, rendered from a T2DG blob.
+ * @fileoverview The `graph.generated.ten` module, rendered from a T2DG blob.
  *
  * **Two legitimate producers write this file**, and they must keep saying which
  * one wrote it — that is provenance, and a reader debugging a stale blob needs it:

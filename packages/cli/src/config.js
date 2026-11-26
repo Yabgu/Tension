@@ -29,7 +29,7 @@ export const CAPABILITIES = ['input'];
  * which is only known once package.json has been read.
  */
 export const DEFAULTS = {
-  entry: 'src/main.ts',
+  entry: 'src/main.ten',
   renderer: '2d',
   window: { width: 1280, height: 720 },
   memory: { initialPages: 200 },
@@ -315,9 +315,9 @@ export function projectPaths(projectDir, config) {
     buildDir: join(projectDir, 'build'),
     wasm: join(projectDir, 'build', 'game.wasm'),
     asconfig: join(projectDir, 'build', 'asconfig.json'),
-    // The emitted 2D graph blob lands here, then becomes src/graph.generated.ts.
+    // The emitted 2D graph blob lands here, then becomes src/graph.generated.ten.
     graphDir: join(projectDir, 'build', '.tension'),
-    generated: resolve(projectDir, config.entry, '..', 'graph.generated.ts'),
+    generated: resolve(projectDir, config.entry, '..', 'graph.generated.ten'),
     assetsDir: config.assets ? resolve(projectDir, config.assets.dir) : null,
     volume: config.assets ? resolve(projectDir, config.assets.volume) : null,
     distDir: join(projectDir, 'dist'),

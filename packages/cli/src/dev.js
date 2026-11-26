@@ -40,7 +40,7 @@ export function commandLine(ctx, options) {
 /**
  * Paths a rebuild must not react to.
  *
- * `src/graph.generated.ts` is the important one: the build writes into `src/`,
+ * `src/graph.generated.ten` is the important one: the build writes into `src/`,
  * and a watcher that reacted to its own output would rebuild forever. The rest
  * are the directories a build or an editor churns.
  */
