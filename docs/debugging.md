@@ -194,7 +194,10 @@ error: JIT(0x…) unable to resolve a line table file address 0x… back to a
        compile unit, please file a bug and attach the address and file.
 ```
 
-A table from two guests, because the shape is not yet predictable:
+A table from two guests, because the shape is not yet predictable. It is a **record of
+a measurement** taken before DL45, so it keeps the spelling the tree had then: the
+guest below is `tests/programs/async/async-on-main.tension` today, and `game.ts` is
+the user's file, untouched by the rename.
 
 | guest | line | what it is | result |
 |---|---|---|---|

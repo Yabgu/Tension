@@ -1,6 +1,6 @@
 # `fixtures/contract` — the continuation half of the I90 pair
 
-`async-on-main.wasm` is `async/async-on-main.ts` compiled for the **continuation**
+`async-on-main.wasm` is `async/async-on-main.tension` compiled for the **continuation**
 backend. Its fiber twin is `../fiber/async-on-main-fiber.wasm`, and the two are
 asserted by one test each in `tests/async_on_main.rs` against **one** expected
 transcript (`async-on-main.expected.txt`).

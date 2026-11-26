@@ -86,6 +86,7 @@ import { pathToFileURL } from 'node:url';
 
 import { REPO, capture, compilerBundleDigest, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
 import { PROGRAM_ALIASES } from './lib/program-aliases.mjs';
+import { GUEST_EXTENSIONS, isGuestSource, guestStem } from './lib/guest-extensions.mjs';
 import {
   readBuildRecord as readArtifactRecord,
   runtimeInputDigest,
@@ -533,25 +534,25 @@ async function verify() {
     );
   }
 
-  // Built guests: every test program `.ts` has an artifact at least as new.
+  // Built guests: every test program source has an artifact at least as new.
   //
   // **One entry per artifact, not per source.** An alias (`PROGRAM_ALIASES`)
   // builds a second artifact from a source that already has one — DL38's fiber
-  // build of the contract program — so a row that counted `.ts` files would
+  // build of the contract program — so a row that counted source files would
   // report one fewer guest than exists and never date the extra one.
   const sources = [];
   if (existsSync(PROGRAMS)) {
     for (const entry of readdirSync(PROGRAMS, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name === 'build' || entry.name === 'fixtures') continue;
       for (const file of readdirSync(join(PROGRAMS, entry.name))) {
-        if (file.endsWith('.ts')) sources.push(join(PROGRAMS, entry.name, file));
+        if (isGuestSource(file)) sources.push(join(PROGRAMS, entry.name, file));
       }
     }
   }
   const artifacts = sources.map((source) => ({
-    name: basename(source, '.ts'),
+    name: guestStem(basename(source)),
     source,
-    artifact: join(PROGRAMS, 'build', `${basename(source, '.ts')}.wasm`),
+    artifact: join(PROGRAMS, 'build', `${guestStem(basename(source))}.wasm`),
   }));
   for (const [name, sourceRel] of Object.entries(PROGRAM_ALIASES)) {
     if (artifacts.some((entry) => entry.name === name)) continue;
@@ -568,7 +569,7 @@ async function verify() {
     if (statSync(artifact).mtimeMs < statSync(source).mtimeMs) stale += 1;
   }
   row(
-    'guests: tests/programs/**/*.ts → build/*.wasm',
+    'guests: tests/programs/**/*.tension → build/*.wasm',
     `${artifacts.length} built after source`,
     absent === 0 && stale === 0 ? `${artifacts.length} current` : `${absent} absent, ${stale} stale`,
     artifacts.length > 0 && absent === 0 && stale === 0 ? 'PASS' : 'STALE',
@@ -649,15 +650,21 @@ function lastCommit(rel) {
   return Number.isFinite(seconds) && out.trim() !== '' ? seconds : null;
 }
 
-/// The `.ts` a fixture was built from, by basename, or null when there is none
+/// The source a fixture was built from, by basename, or null when there is none
 /// (a fixture whose source was never in the tree cannot be compared).
+///
+/// The candidates are the **declared table's**, in the table's order, so a fixture
+/// whose program was renamed is still found — and a tree that has both spellings
+/// resolves the canonical one first, exactly as the compiler does.
 function findSourceFor(fixtureRel) {
   const base = fixtureRel.slice(fixtureRel.lastIndexOf('/') + 1).replace(/\.wasm$/, '');
   if (!existsSync(PROGRAMS)) return null;
   for (const entry of readdirSync(PROGRAMS, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.name === 'build' || entry.name === 'fixtures') continue;
-    const candidate = join(PROGRAMS, entry.name, `${base}.ts`);
-    if (existsSync(candidate)) return candidate;
+    for (const ext of GUEST_EXTENSIONS) {
+      const candidate = join(PROGRAMS, entry.name, `${base}${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }

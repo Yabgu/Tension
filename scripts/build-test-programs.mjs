@@ -4,7 +4,7 @@
 //
 // One recipe, two callers: `node scripts/build-test-programs.mjs` by hand, and
 // any `tension-core/tests/*.rs` that runs a program when its `.wasm` is missing
-// or older than its `.ts`. A flag list copied into a Rust test would be the
+// or older than its source. A flag list copied into a Rust test would be the
 // drift this repository refuses, and the flag that matters most is the one a
 // copy would drop: **`--optimizeLevel 0`**.
 //
@@ -12,7 +12,7 @@
 //
 // `-O0` is a *choice*: it builds fastest, keeps the artifacts small, and leaves
 // the line table unperturbed in the debug builds. It is no longer a workaround
-// for the optimizer. The pin at `150a6e97` compiles `async/schedule-order.ts`
+// for the optimizer. The pin at `150a6e97` compiles `async/schedule-order.tension`
 // at -O1, -O2 and -O3, and the compiler repo's `tests/async/optimize.js` pins a
 // three-line `await` at every level. Before that pin, -O1 aborted in `dce`
 // (`BinaryenResumeWithHandlers` built handlers but no sent types) and -O2 in
@@ -51,6 +51,7 @@ import { fileURLToPath } from "node:url";
 
 import { compilerIdentity, readBuildRecord, writeBuildRecord } from "./lib/toolchain.mjs";
 import { PROGRAM_ALIASES } from "./lib/program-aliases.mjs";
+import { guestStem, isGuestSource } from "./lib/guest-extensions.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
@@ -213,7 +214,7 @@ const PLAIN_FLAGS = [
 ];
 
 /**
- * A program's flag list, by **basename** — the file name without `.ts`.
+ * A program's flag list, by **basename** — the file name without its extension.
  *
  * Names are unique across the folders (a build failure says so if not), so a
  * test asks for `guest("main-policy")` and does not care which folder the
@@ -260,7 +261,7 @@ const PROGRAMS = {
   // the wake guard, for the same reason.
   "two-waiters-late": WAKE_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
-  // Built from `async/async-on-main.ts` — see `ALIASES` below.
+  // Built from `async/async-on-main.tension` — see `ALIASES` below.
   "async-on-main-fiber": ASYNC_ON_MAIN_FIBER_FLAGS,
   // DL40: the three cross-store programs on the fiber backend.
   "spawn-join-fiber": FIBER_FLAGS,
@@ -300,7 +301,11 @@ const FOLDER_FLAGS = {
   "atomic": THREAD_FLAGS,
 };
 
-/** Every `.ts` under `programs/`, as repo-relative paths, sorted. */
+/** Every guest source under `programs/`, as repo-relative paths, sorted.
+ *
+ * "Guest source" is the declared table's question, not this file's: a program may be
+ * spelled `.tension` (canonical), `.ten`, or `.ts`, and `scripts/lib/guest-extensions.mjs`
+ * is the one place that list lives. */
 function collect(dir, prefix = "") {
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -308,7 +313,7 @@ function collect(dir, prefix = "") {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       found.push(...collect(join(dir, entry.name), rel));
-    } else if (entry.name.endsWith(".ts")) {
+    } else if (isGuestSource(entry.name)) {
       found.push(rel);
     }
   }
@@ -318,14 +323,14 @@ function collect(dir, prefix = "") {
 mkdirSync(out, { recursive: true });
 const sources = collect(programs);
 if (sources.length === 0) {
-  console.error("build-test-programs: no .ts programs under " + programs);
+  console.error("build-test-programs: no guest sources under " + programs);
   process.exit(1);
 }
 
 /** Name uniqueness is what lets a test ask for a program without a folder. */
 const seen = new Map();
 for (const rel of sources) {
-  const name = rel.split("/").pop().replace(/\.ts$/, "");
+  const name = guestStem(rel.split("/").pop());
   if (seen.has(name)) {
     console.error(
       `build-test-programs: two programs are named "${name}": ` +
@@ -362,9 +367,9 @@ function sameFlags(a, b) {
 }
 // **The work list: one entry per artifact**, which is one per source plus the
 // aliases. An alias names its own source, so `async-on-main-fiber.wasm` is built
-// from `async/async-on-main.ts` and nothing else has to know it exists.
+// from `async/async-on-main.tension` and nothing else has to know it exists.
 const work = sources.map((rel) => {
-  const name = rel.split("/").pop().replace(/\.ts$/, "");
+  const name = guestStem(rel.split("/").pop());
   const folder = rel.includes("/") ? rel.split("/")[0] : "";
   const alias = ALIASES[name];
   return {
@@ -373,11 +378,11 @@ const work = sources.map((rel) => {
     flags: alias ? alias.flags : PROGRAMS[name] ?? FOLDER_FLAGS[folder],
   };
 });
-// The aliases are artifacts with no `.ts` of their own, so they are not in
+// The aliases are artifacts with no source of their own, so they are not in
 // `sources`; they are appended here in name order, which keeps the build's output
 // stable without pretending they are programs.
 for (const name of Object.keys(ALIASES).sort()) {
-  if (sources.some((rel) => rel.split("/").pop().replace(/\.ts$/, "") === name)) continue;
+  if (sources.some((rel) => guestStem(rel.split("/").pop()) === name)) continue;
   work.push({ rel: ALIASES[name].source, name, flags: ALIASES[name].flags });
 }
 for (const { rel, name, flags } of work) {

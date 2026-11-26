@@ -1,7 +1,7 @@
 {
-  "compiler": "7db1bb6d34a995d3737f73017f31ed17da5078d3040e7038283ea0f3a4f08f1e",
+  "compiler": "f97c0f03b334b1e8e318c39dc60857a405ceee076b3085f7d2c9498201d3e6dd",
   "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
-  "source": "thread/suspend-serve.ts",
+  "source": "thread/suspend-serve.tension",
   "flags": [
     "--runtime",
     "incremental",

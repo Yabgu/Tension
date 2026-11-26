@@ -1,0 +1,19 @@
+{
+  "compiler": "f97c0f03b334b1e8e318c39dc60857a405ceee076b3085f7d2c9498201d3e6dd",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
+  "source": "async/main-policy.tension",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--enable",
+    "stack-switching",
+    "--exportStart",
+    "__start",
+    "--optimizeLevel",
+    "0",
+    "--debug",
+    "--sourceMap"
+  ]
+}

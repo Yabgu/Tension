@@ -19,6 +19,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { GUEST_EXTENSIONS } from "../../../scripts/lib/guest-extensions.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const name = process.argv[2];
 const trace = process.argv.includes("--trace");
@@ -46,7 +48,13 @@ if (!name) {
 // compiler is installed and the artifact is missing or stale, and always print
 // what was loaded. `--release` forces the release artifact for a plain run.
 const wantRelease = process.argv.includes("--release");
-const sourcePath = join(here, "async", `${name}.ts`);
+// **The source, by the declared table** (DL45): a program may be spelled `.tension`,
+// `.ten` or `.ts`, and this launcher's job is to date the artifact against whichever
+// the tree has. Search order is the table's, so a tree mid-rename resolves the
+// canonical spelling first rather than depending on which file `readdir` returns.
+const sourcePath = GUEST_EXTENSIONS
+  .map((ext) => join(here, "async", `${name}${ext}`))
+  .find((candidate) => existsSync(candidate)) ?? join(here, "async", `${name}${GUEST_EXTENSIONS[0]}`);
 const debugPath = join(here, "build", "debug", `${name}.wasm`);
 const releasePath = join(here, "build", `${name}.wasm`);
 

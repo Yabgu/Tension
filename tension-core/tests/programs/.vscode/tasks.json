@@ -4,7 +4,7 @@
   // Each command is the compiler, the source file, the output file and the
   // flags — nothing wrapped, nothing generated. `--debug --sourceMap` is what
   // puts the `.debug_*` sections and the source map beside the artifact;
-  // without both, a breakpoint in the `.ts` has nothing to bind against.
+  // without both, a breakpoint in the `.tension` has nothing to bind against.
   //
   // The flags match `scripts/build-test-programs.mjs` (this folder is a
   // table of them, there a program name maps to the same list), and
@@ -13,82 +13,82 @@
   "version": "2.0.0",
   "tasks": [
     {
-      // async/async-on-main.ts -> build/debug/async-on-main.wasm
+      // async/async-on-main.tension -> build/debug/async-on-main.wasm
       "type": "shell",
       "label": "build: async-on-main",
-      "command": "node ../../../scripts/tensionscript.mjs async/async-on-main.ts -o build/debug/async-on-main.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs async/async-on-main.tension -o build/debug/async-on-main.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // async/main-policy.ts -> build/debug/main-policy.wasm
+      // async/main-policy.tension -> build/debug/main-policy.wasm
       "type": "shell",
       "label": "build: main-policy",
-      "command": "node ../../../scripts/tensionscript.mjs async/main-policy.ts -o build/debug/main-policy.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs async/main-policy.tension -o build/debug/main-policy.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // async/main-step-replaced.ts -> build/debug/main-step-replaced.wasm
+      // async/main-step-replaced.tension -> build/debug/main-step-replaced.wasm
       "type": "shell",
       "label": "build: main-step-replaced",
-      "command": "node ../../../scripts/tensionscript.mjs async/main-step-replaced.ts -o build/debug/main-step-replaced.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs async/main-step-replaced.tension -o build/debug/main-step-replaced.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // async/schedule-order.ts -> build/debug/schedule-order.wasm
+      // async/schedule-order.tension -> build/debug/schedule-order.wasm
       "type": "shell",
       "label": "build: schedule-order",
-      "command": "node ../../../scripts/tensionscript.mjs async/schedule-order.ts -o build/debug/schedule-order.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs async/schedule-order.tension -o build/debug/schedule-order.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // async/fallback-loop.ts -> build/debug/fallback-loop.wasm
+      // async/fallback-loop.tension -> build/debug/fallback-loop.wasm
       "type": "shell",
       "label": "build: fallback-loop",
-      "command": "node ../../../scripts/tensionscript.mjs async/fallback-loop.ts -o build/debug/fallback-loop.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs async/fallback-loop.tension -o build/debug/fallback-loop.wasm --runtime incremental --target release --enable stack-switching --exportStart __start --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // async/rt-guards.ts -> build/debug/rt-guards.wasm
+      // async/rt-guards.tension -> build/debug/rt-guards.wasm
       "type": "shell",
       "label": "build: rt-guards",
-      "command": "node ../../../scripts/tensionscript.mjs async/rt-guards.ts -o build/debug/rt-guards.wasm --runtime incremental --target release --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs async/rt-guards.tension -o build/debug/rt-guards.wasm --runtime incremental --target release --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // thread/count.ts -> build/debug/count.wasm
+      // thread/count.tension -> build/debug/count.wasm
       "type": "shell",
       "label": "build: count",
-      "command": "node ../../../scripts/tensionscript.mjs thread/count.ts -o build/debug/count.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs thread/count.tension -o build/debug/count.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // thread/spawn-join.ts -> build/debug/spawn-join.wasm
+      // thread/spawn-join.tension -> build/debug/spawn-join.wasm
       "type": "shell",
       "label": "build: spawn-join",
-      "command": "node ../../../scripts/tensionscript.mjs thread/spawn-join.ts -o build/debug/spawn-join.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs thread/spawn-join.tension -o build/debug/spawn-join.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // thread/two-workers.ts -> build/debug/two-workers.wasm
+      // thread/two-workers.tension -> build/debug/two-workers.wasm
       "type": "shell",
       "label": "build: two-workers",
-      "command": "node ../../../scripts/tensionscript.mjs thread/two-workers.ts -o build/debug/two-workers.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs thread/two-workers.tension -o build/debug/two-workers.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },
     {
-      // thread/spawn-refusals.ts -> build/debug/spawn-refusals.wasm
+      // thread/spawn-refusals.tension -> build/debug/spawn-refusals.wasm
       "type": "shell",
       "label": "build: spawn-refusals",
-      "command": "node ../../../scripts/tensionscript.mjs thread/spawn-refusals.ts -o build/debug/spawn-refusals.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
+      "command": "node ../../../scripts/tensionscript.mjs thread/spawn-refusals.tension -o build/debug/spawn-refusals.wasm --runtime incremental --target release --sharedMemory --importMemory --initialMemory 2 --maximumMemory 256 --enable threads --enable stack-switching --optimizeLevel 0 --debug --sourceMap",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
     },

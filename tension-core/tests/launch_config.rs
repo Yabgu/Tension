@@ -100,7 +100,17 @@ fn read_jsonc(path: &Path) -> serde_json::Value {
         .unwrap_or_else(|error| panic!("{} is not JSON after stripping comments: {error}", path.display()))
 }
 
-/// Every `.ts` under `tests/programs/`, by basename.
+/// The guest-source extensions, as `scripts/lib/guest-extensions.mjs` declares them.
+///
+/// Repeated here rather than shelled out for: a Rust test that spawns Node to learn
+/// three strings is slower than the three strings, and this file already asserts
+/// against `tasks.json` as data. The load-bearing check is the other direction —
+/// `every_program_has_its_own_configuration` compares this list against the
+/// configurations, so a program spelled with an extension missing here fails by
+/// name rather than silently vanishing from the enumeration.
+const GUEST_EXTENSIONS: [&str; 3] = ["tension", "ten", "ts"];
+
+/// Every guest source under `tests/programs/`, by basename.
 fn program_sources() -> Vec<String> {
     fn walk(dir: &Path, found: &mut Vec<String>) {
         for entry in fs::read_dir(dir).expect("the programs directory is readable") {
@@ -111,7 +121,11 @@ fn program_sources() -> Vec<String> {
                     continue;
                 }
                 walk(&path, found);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("ts") {
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| GUEST_EXTENSIONS.contains(&ext))
+            {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     found.push(stem.to_string());
                 }
@@ -223,10 +237,15 @@ fn the_guest_debugger_opens_a_debug_artifact() {
         let program = name
             .strip_prefix("debug: ")
             .unwrap_or_else(|| panic!("`{name}` is not named `debug: <program>`"));
+        // **The canonical guest spelling** (DL45): `.tension`. The `.ts` this
+        // asserted through DL44 is still accepted by the compiler during the
+        // deprecation window, so this could read green while the task compiled a
+        // file the tree no longer has — which is why the assertion names the
+        // canonical extension rather than any accepted one.
         assert!(
-            command.contains(&format!("{program}.ts")),
+            command.contains(&format!("{program}.tension")),
             "`{name}` runs task `{task_label}` (`{command}`), which does not compile \
-             {program}.ts"
+             {program}.tension"
         );
         assert!(
             command.contains(&format!("{program}.wasm")),

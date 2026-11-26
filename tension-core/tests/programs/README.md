@@ -37,15 +37,15 @@ missing and what to run. The README beside the fixture carries the command that 
 
 | program | run by | proves |
 |---|---|---|
-| `async/main-policy.ts` | `gallery_async.rs`, `debugger.rs` | a program's own `mainStep` replaces main's default step; the breakpoint guard reads it as a stack-switching guest |
-| `async/fallback-loop.ts` | `gallery_async.rs` | a suspension yields into the executor loop, which keeps turning |
-| `async/main-step-replaced.ts` | `gallery_async.rs` | a program **owns** main's scheduling — two slots, then one drain |
-| `async/async-on-main.ts` | `async_on_main.rs` | the shared ABI contract: six suspensions, a local carried across all of them |
-| `async/rt-guards.ts` | `framework_guards.rs`, `debugger.rs` | the framework's behaviour with no session open; and, in a debug build, a source breakpoint that binds |
-| `thread/count.ts` | `threads.rs` | `__executorCount` and the carved control block |
-| `thread/spawn-join.ts` | `threads.rs` | spawn a worker, serve a request, reply, join |
-| `thread/two-workers.ts` | `threads.rs` | two workers, twelve tasks, every value exactly once |
-| `thread/spawn-refusals.ts` | `threads.rs` | the contract's refusals are values, not traps |
+| `async/main-policy.tension` | `gallery_async.rs`, `debugger.rs` | a program's own `mainStep` replaces main's default step; the breakpoint guard reads it as a stack-switching guest |
+| `async/fallback-loop.tension` | `gallery_async.rs` | a suspension yields into the executor loop, which keeps turning |
+| `async/main-step-replaced.tension` | `gallery_async.rs` | a program **owns** main's scheduling — two slots, then one drain |
+| `async/async-on-main.tension` | `async_on_main.rs` | the shared ABI contract: six suspensions, a local carried across all of them |
+| `async/rt-guards.tension` | `framework_guards.rs`, `debugger.rs` | the framework's behaviour with no session open; and, in a debug build, a source breakpoint that binds |
+| `thread/count.tension` | `threads.rs` | `__executorCount` and the carved control block |
+| `thread/spawn-join.tension` | `threads.rs` | spawn a worker, serve a request, reply, join |
+| `thread/two-workers.tension` | `threads.rs` | two workers, twelve tasks, every value exactly once |
+| `thread/spawn-refusals.tension` | `threads.rs` | the contract's refusals are values, not traps |
 
 ## Running one by hand
 

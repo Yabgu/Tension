@@ -1,7 +1,7 @@
 {
-  "compiler": "bf1ebc2770b8f8fc05ffa6b8c0b4a09e89a66dd97790064d684c92780ad56f81",
-  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
-  "source": "async/async-on-main.ts",
+  "compiler": "f97c0f03b334b1e8e318c39dc60857a405ceee076b3085f7d2c9498201d3e6dd",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
+  "source": "async/async-on-main.tension",
   "flags": [
     "--runtime",
     "incremental",
