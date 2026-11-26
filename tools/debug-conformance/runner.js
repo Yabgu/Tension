@@ -141,7 +141,7 @@ function transcriptLines(source, functionName) {
 /** Expand a matrix row into the concrete cases it names. */
 function expand(row) {
   const source = sourceOf(row.program);
-  if (!source) throw new Error(`no .ts program named "${row.program}" under ${programs}`);
+  if (!source) throw new Error(`no guest program named "${row.program}" under ${programs}`);
   const text = fs.readFileSync(source, "utf8");
   if (row.marker) {
     return [{ name: row.name, program: row.program, file: row.file, line: lineOfMarker(text, row.marker), group: row.group, executors: row.executors ?? 0 }];

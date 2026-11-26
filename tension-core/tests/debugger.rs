@@ -46,7 +46,7 @@
 //! report. **That is false**, and it was measured false on 2026-11-22: a
 //! DWARF-carrying guest is registered — `image list` shows `[30] … JIT(0x…)` —
 //! and a breakpoint on `rt-guards.tension:96` stops inside
-//! `async/rt-guards/_start_game`. Both lldb builds on that machine agree:
+//! `async/rt-guards.tension/_start_game`. Both lldb builds on that machine agree:
 //! codelldb's 20.1.4 and msys2's 23.1.5. `docs/debugging.md` carries the
 //! transcripts.
 //!
@@ -595,11 +595,13 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
         observation.describe()
     );
     // The stop must be inside the guest's own function, not the host's frame
-    // that happened to run: `<dir>/rt-guards/_start_game` is the symbol the
-    // JIT image carries for it.
+    // that happened to run: `<dir>/rt-guards.tension/_start_game` is the symbol
+    // the JIT image carries for it — the mangled module prefix is the entry
+    // path, so it carries the extension (DL45 renamed the file and this symbol
+    // with it).
     let function = observation.function.as_deref().unwrap_or("");
     assert!(
-        function.contains("rt-guards/_start_game"),
+        function.contains("rt-guards.tension/_start_game"),
         "stopped in the host rather than the guest: {}",
         observation.describe()
     );

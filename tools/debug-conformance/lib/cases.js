@@ -18,6 +18,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { debugGuest } from "../../e2e-debugger/lib/run-lldb.js";
+import { GUEST_EXTENSIONS } from "../../../scripts/lib/guest-extensions.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const repo = path.resolve(here, "..", "..", "..");
@@ -30,12 +31,19 @@ export const DEBUG_TIMEOUT_MS = 30_000;
 /** A load probe is a parse plus a short run; every conformance guest finishes in <1 s. */
 export const PROBE_TIMEOUT_MS = 20_000;
 
-/** Where a program's source lives, by searching the program folders. */
+/**
+ * Where a program's source lives, by searching the program folders — under every
+ * spelling the declared table accepts, in the table's order (DL45). A census that
+ * only knew `.ts` stopped dead on the rename: `no .ts program named
+ * "first-statement"`.
+ */
 export function sourceOf(programName) {
   for (const folder of fs.readdirSync(programs, { withFileTypes: true })) {
     if (!folder.isDirectory() || folder.name === "build") continue;
-    const candidate = path.join(programs, folder.name, `${programName}.ts`);
-    if (fs.existsSync(candidate)) return candidate;
+    for (const ext of GUEST_EXTENSIONS) {
+      const candidate = path.join(programs, folder.name, `${programName}${ext}`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
   return null;
 }

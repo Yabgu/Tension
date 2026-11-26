@@ -156,14 +156,21 @@ pub fn report(guest: &Path, info: &GuestDebugInfo, symbol_paths: &[PathBuf]) {
     }
 
     // The module/function hint keeps the example's own naming, which is what
-    // `asc` derives from the source path: `<dir>/<file>.ts` -> `<dir>/<export>`.
+    // `asc` derives from the source path: `<dir>/<file>.tension` -> `<dir>/<export>`.
     let hint = guest
         .file_stem()
         .map(|stem| format!("{}/", stem.to_string_lossy()))
         .unwrap_or_default();
+    // **The canonical guest spelling** (DL45). This line is a convenience for the
+    // person about to paste an lldb command, and the extension it prints has to be
+    // the one the artifact's line table carries — renaming a guest moves the DWARF
+    // file name with it, so a hint pinned to `.ts` would name a file that no longer
+    // exists and `breakpoint set -f` would bind nowhere. `.tension` is the spelling
+    // a tree is converging on and the compiler accepts it; a guest still spelled
+    // `.ts` is the deprecation window's business, not this hint's.
     let source_hint = guest
         .file_stem()
-        .map(|stem| format!("{}.ts", stem.to_string_lossy()))
+        .map(|stem| format!("{}.tension", stem.to_string_lossy()))
         .unwrap_or_default();
     eprintln!("[tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on");
     for path in symbol_paths {
