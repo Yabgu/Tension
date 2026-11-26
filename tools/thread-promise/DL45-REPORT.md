@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| `~/work/Tension` | `feat/dl45-ten-extension` off `develop` (`11dd7c6`) — tip **`b980b8c`** |
-| `~/work/TensionScript-a2` | `feat/dl45-ten-extension` off `develop` (`f045fc5a`) — tip **`3aa5cb80`** |
+| `~/work/Tension` | `feat/dl45-ten-extension` off `develop` (`11dd7c6`) — code tip **`b980b8c`** (this report is the commit after it) |
+| `~/work/TensionScript-a2` | `feat/dl45-ten-extension` off `develop` (`f045fc5a`) — **`368742df`** |
 | CI (Tension) | **`45858425940` success** — `E2E debug` (`45848693310` was green at the rename tip too) |
 | CI (TensionScript) | **`45858413491` success — all 17 jobs**, `Coverage` included; the two red attempts before the fix are §9 |
 | installed compiler | `96c7d1c0825a` → **`f97c0f03b334`** (the table is a compiler change — §4) |
