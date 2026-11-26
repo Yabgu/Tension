@@ -378,10 +378,25 @@ change still reads STALE — measured: one appended comment, committed, gave
   associations and the declaration program in place is **not measured**. The 13→3 count is
   `tsc` on a `.ts` copy, which is the closest thing to the server's answer that can be
   produced without a GUI, and it is not the same thing.
-- **A full local `npx c8 -- npm test` at the default heap after the fix was started but not
-  finished** (it was still in its last third when this report was written: 17 suites green,
-  1.7 GB of corpus). The CI job *is* finished, at the same command and a default heap, and
-  it passed — so the claim rests on `45858413491`, not on the local run.
+- **A local `npx c8 -- npm test` is still red here, and the reason is not this round.** After
+  the fix, the local run still aborts at Node **26**'s default 4 GB heap — and it does so
+  *after* `test:atomics`, the last suite, while c8 processes the corpus. Measured
+  separately, **running only the reporter over the finished corpus, with no test running at
+  all**:
+
+  ```
+  npx c8 report -r text-summary                       -> FATAL … heap out of memory (4 GB)
+  NODE_OPTIONS=--max-old-space-size=8192 npx c8 report -r text-summary
+                                                     -> 89.82% statements (83622/93099)
+  corpus: 821 files, 2.9 GB; this test's share: 2 files, 264 KB (0.009%)
+  ```
+
+  So on this machine the corpus is larger than Node 26's default heap can summarize, with or
+  without the CLI test — while **CI, on Node 24 and the same 4 GB default, finished**
+  (`45858413491`). The difference between those environments is not established by this
+  round; what *is* established is that the 46 MB my test used to add was enough to tip CI's
+  job into the same failure at the same point, twice, and that removing it put CI back to
+  green. I did not make the local run green and am not claiming it.
 - **Node 24 was never run locally** — this host has only Node 26. That is why the fix chose
   a form whose behaviour does not depend on the version, instead of the empty-string
   spelling that happened to work here.
