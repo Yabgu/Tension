@@ -6,7 +6,7 @@ written, measured end to end and committed — but it cannot be pushed, because 
 
 ```
 Tension        feat/dl50-two-gates      @ (this commit)   ← Phase B, pushed
-TensionScript  feat/dl50-coverage-heap  @ 56ab3e8a…       ← Phase A, LOCAL ONLY (push refused)
+TensionScript  feat/dl50-coverage-heap  @ b55a971f       ← Phase A, LOCAL ONLY (push refused)
 ```
 
 ---
@@ -139,7 +139,7 @@ platform applied to this credential, and that is a decision for the seat, not fo
 To unblock, any one of:
 
 1. `gh auth refresh -s workflow` (interactive, one-time), then I push and watch the run;
-2. the seat pushes `feat/dl50-coverage-heap` (`56ab3e8a`, one file, YAML only);
+2. the seat pushes `feat/dl50-coverage-heap` (`b55a971f`, one file, YAML only);
 3. the seat applies the same three lines to its copy.
 
 The branch is local, clean, and contains only the workflow file.
