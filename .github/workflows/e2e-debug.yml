@@ -296,7 +296,12 @@ jobs:
         # `tension-core/tests/programs/fixtures/fiber/park-frame.wasm` and the test reads it
         # through `guest_or_fixture`, so this job needs no compiler — the same rule the
         # other fiber artifacts already follow.
+        #
+        # `spawn_ready` is the same rule for I95: **spawned work runs** is the claim this
+        # round makes, and a behavioural gate that lives only on a developer's machine is
+        # how the defect survived three rounds. Its fixture is
+        # `fixtures/fiber/spawn-ready.wasm`.
         run: |
           cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
             --test fiber --test fiber-executor --test fiber-runner --test async_on_main \
-            --test park_frame --test input_sources
+            --test park_frame --test input_sources --test spawn_ready

@@ -330,6 +330,13 @@ const PROGRAMS = {
   "main-step-replaced": ASYNC_ON_MAIN_FLAGS,
   // DL36's fiber executor guest: the I70 scenario on the fiber backend.
   "i70-fiber": FIBER_FLAGS,
+  // DL61, I95: three spawned tasks, none awaited, all of which must run. `ASYNC_ON_MAIN_
+  // FIBER_FLAGS` because the claim is about the fiber console path and the program opens no
+  // session; `--optimizeLevel 0` like every other program here.
+  "spawn-ready": ASYNC_ON_MAIN_FIBER_FLAGS,
+  // **No continuation twin, deliberately** (DL61 decision 7): a floating spawn on that
+  // backend has no driver once the entry returns, so it is refused by name rather than
+  // compiled to a silent zero. `spawn_ready.rs` asserts that refusal.
 };
 
 /**

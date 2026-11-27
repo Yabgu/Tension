@@ -1,0 +1,20 @@
+{
+  "name": "tension-example-spawn",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: floating tasks — spawn work, do not await it, and let the host run it",
+  "scripts": {
+    "build": "node ../../scripts/tensionscript.mjs game.ten -o build/game.wasm --runtime incremental --target release --optimizeLevel 3",
+    "build:debug": "node ../../scripts/tensionscript.mjs game.ten -o build/game.wasm --runtime incremental --debug --sourceMap",
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "plain"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework",
+    "@yabgu_gm/tension-core": "file:../../packages/core"
+  }
+}

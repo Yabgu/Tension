@@ -1,5 +1,5 @@
 {
-  "compiler": "68aa84d2944f59af068cc4b25e7cb57ce572d15f1e6dfdeecb06dec49d97b121",
+  "compiler": "0c5a5642863d15ee6c815176b4c42819eceb78a15e3c809f9aead1a02720d0ab",
   "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "async/main-policy.ten",
   "flags": [
@@ -19,7 +19,7 @@
     "--sourceMap"
   ],
   "readSet": {
-    "std": "2346398912f22cac30860588c0b38e94395cfab57378b8bdc021ef22edd61541",
-    "framework": "81ad87d3c84e1ea63b4f321d0400b3b9c2fa60dc4fbb5d97a12e044c747e141e"
+    "std": "a876f5376a904a8ba6ee96dae6e6541f49b60664a3c6fd04010de8e73155f6af",
+    "framework": "78c7802a69b684834f1b75ef71d018db314d359478f40a7151e869d163d48095"
   }
 }

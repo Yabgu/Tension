@@ -1,0 +1,47 @@
+// Floating tasks: spawn work and do not await it.
+//
+//   npm start
+//
+// The one new thing here is the *shape* of the call. `work(3);` in statement position is
+// the program saying "start this and do not wait" — the value it returns is a task nobody
+// keeps, so there is nothing to await and no one to report to. That is not a leak and not
+// a fire-and-forget shrug: the backend you build for owns the queue, and every body runs
+// before the program exits.
+//
+// On the fiber backend the guest cannot run the body itself (its stack is a host object),
+// so it hands the slot to the host's ready queue and the host resumes it after the entry
+// returns. On continuations the guest's own executor ring is the queue. Either way the
+// order below is the order the tasks were handed over, because the default policy is FIFO.
+//
+// **Awaiting is the other choice, and it is a different program.** `await work(1)` runs the
+// body before the next line and gives you its value; this file prints its three lines after
+// the entry has already returned, which is why `done` comes last and not first.
+
+import { print } from "tension-framework";
+
+/** Something that takes a moment: two suspensions, so each body is a real fiber task. */
+async function step(label: string): i32 {
+  await yieldOnce();
+  await yieldOnce();
+  print("  step " + label);
+  return 1;
+}
+
+/** A floating body: nobody awaits it, and it still runs to completion. */
+async function work(id: i32): void {
+  let done: i32 = await step(id.toString());
+  print("work " + id.toString() + " finished (" + done.toString() + ")");
+}
+
+/** A park that needs no producer: the host's own loop resumes it. */
+async function yieldOnce(): i32 {
+  return 0;
+}
+
+export function _start_game(): void {
+  print("spawning three tasks and not awaiting any of them");
+  work(1);
+  work(2);
+  work(3);
+  print("the entry returns here; the host runs what was spawned");
+}
