@@ -1,0 +1,51 @@
+// **One program, two sources** (DL57 decision 6, proved here).
+//
+// The awaitable input surface has to carry a second consumer *unchanged*, or it is an
+// AI-shaped fix wearing a general name. The consumer below is a **file reader**: `drain(1)`
+// and `drain(0)` are the same function, and the only difference between the two calls is the
+// number. Nothing about the shape — `inputArm`, `await inputTask(source)`, the `InputEvent`
+// branch, `readLineNow(source)` — changes.
+//
+// **It is a real source, not a stub.** `input_arm(1)` opens `TENSION_INPUT_FILE` on the host's
+// reader thread and posts `IO_READY` per line exactly as stdin does; the run below reads a
+// file's two lines and stdin's one in the same process. A socket will post on the same pair
+// with its own id — `input_arm` refuses a key no producer has (`-ENOSYS`), so a guest cannot
+// park on a completion that will never come.
+//
+// Driven by `tests/input_sources.rs`, headless: stdin is piped in and the file path is an
+// environment variable, so this is a CI gate rather than a manual run.
+import { rt } from "../../../../tension-framework/assembly/runtime/rt";
+import { InputEvent, inputArm, inputTask, readLineNow } from "../../../../tension-framework/assembly/io";
+
+@external("tension::io", "print")
+declare function hostPrint(ptr: usize, len: i32): void;
+
+function line(text: string): void {
+  let bytes = String.UTF8.encode(text);
+  hostPrint(changetype<usize>(bytes), bytes.byteLength);
+  let newline = String.UTF8.encode("\n");
+  hostPrint(changetype<usize>(newline), newline.byteLength);
+}
+
+/// **`source` is the whole of the difference between consumers.** The body is shared.
+async function drain(source: i32, label: string): void {
+  line(label + ": armed=" + inputArm(source).toString());
+  let running: bool = true;
+  let count: i32 = 0;
+  while (running) {
+    let event: InputEvent = await inputTask(source);
+    if (event == InputEvent.Line) {
+      line(label + " line: " + readLineNow(source));
+      count += 1;
+    } else {
+      line(label + " end after " + count.toString());
+      running = false;
+    }
+  }
+}
+
+export async function _start_game(): void {
+  rt.start();
+  await drain(0, "stdin");
+  await drain(1, "file");
+}

@@ -1,0 +1,7 @@
+stdin: armed=0
+stdin line: from stdin
+stdin end after 1
+file: armed=0
+file line: from file one
+file line: from file two
+file end after 2
