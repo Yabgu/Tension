@@ -22,7 +22,14 @@ mod support_programs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use support_programs::{guest, programs_dir};
+use support_programs::{fiber_fixtures_dir, guest_or_fixture, programs_dir};
+
+/// The probe's artifact: built when this checkout has a compiler, the committed fixture when
+/// it does not (`fixtures/fiber/input-sources.wasm`) — the rule `park_frame` follows, and
+/// what lets the Stackful proofs job run this gate with no compiler at all.
+fn probe() -> std::path::PathBuf {
+    guest_or_fixture("input-sources", fiber_fixtures_dir())
+}
 
 fn transcript(text: &str) -> Vec<String> {
     text.lines()
@@ -49,7 +56,7 @@ fn one_program_reads_stdin_and_a_file_through_the_same_awaitable() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .env("TENSION_INPUT_FILE", &file)
         .env("TENSION_ITERATIONS", "1")
-        .arg(guest("input-sources"))
+        .arg(probe())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

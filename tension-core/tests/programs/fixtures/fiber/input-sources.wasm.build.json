@@ -1,0 +1,21 @@
+{
+  "compiler": "77d812321f4d325782375097f43bdfbb993362159e5f69f428eebdd4b6e64e0a",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
+  "source": "probe/input-sources.ten",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--optimizeLevel",
+    "0",
+    "--stackful-backend",
+    "fiber",
+    "--exportStart",
+    "__start"
+  ],
+  "readSet": {
+    "std": "208d249d8b73296143cee71d17b9b9bc4bda25d39ef300c0879aef8e84519c49",
+    "framework": "78c7802a69b684834f1b75ef71d018db314d359478f40a7151e869d163d48095"
+  }
+}
