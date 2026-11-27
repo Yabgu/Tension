@@ -186,7 +186,7 @@ pub fn contract_fixtures_dir() -> PathBuf {
 /// Extracted so the two accessors cannot drift in *how* they fall back — the
 /// difference between them is a directory, and that is the only difference the
 /// callers should ever see.
-fn guest_or_fixture(name: &str, dir: PathBuf) -> PathBuf {
+pub fn guest_or_fixture(name: &str, dir: PathBuf) -> PathBuf {
     if compiler_installed() {
         return guest(name);
     }

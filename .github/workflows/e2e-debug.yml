@@ -291,6 +291,12 @@ jobs:
       # compiler; they are committed now (`fixtures/contract/` for the continuation
       # build, `fixtures/fiber/` for the fiber one), so the gate is real in CI.
       - name: Stackful proofs
+        # `park_frame` is here because a gate that only runs on a machine with a compiler
+        # is not a gate (I136). Its guest is committed at
+        # `tension-core/tests/programs/fixtures/fiber/park-frame.wasm` and the test reads it
+        # through `guest_or_fixture`, so this job needs no compiler — the same rule the
+        # other fiber artifacts already follow.
         run: |
           cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
-            --test fiber --test fiber-executor --test fiber-runner --test async_on_main
+            --test fiber --test fiber-executor --test fiber-runner --test async_on_main \
+            --test park_frame

@@ -25,6 +25,24 @@ different compiler is a **deliberate** act: the record then differs, and
 *built* set only — a committed fixture is pinned on purpose and is not asked to
 follow the installed compiler.
 
+## `park-frame.wasm` — the park probe (DL57)
+
+`tests/programs/probe/park-frame.ten`, compiled with `PROBE_FLAGS`
+(`--stackful-backend fiber --exportStart __start`):
+
+```
+node scripts/build-test-programs.mjs park-frame
+cp build/park-frame.wasm{,.build.json} tests/programs/fixtures/fiber/
+```
+
+`tests/park_frame.rs` reads it through `guest_or_fixture`, so the Stackful proofs job runs
+the gate with no compiler — which is what makes it a gate rather than a local check (I136).
+
+It awaits `rt.frame()` twice. Under the fiber backend that is `scheduler::park(0, 9, 0)`,
+and the answer comes from the host's frame clock; the test asserts the import, the
+transcript, and that each `resume` lands in the **same host pass** as the post that caused
+it — a later pass would be polling.
+
 ## What it does
 
 ```ts

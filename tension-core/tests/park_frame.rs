@@ -28,7 +28,7 @@ mod support_programs;
 
 use std::process::Command;
 
-use support_programs::{guest, programs_dir};
+use support_programs::{fiber_fixtures_dir, guest_or_fixture, programs_dir};
 
 fn transcript(stdout: &str) -> Vec<String> {
     stdout
@@ -37,6 +37,17 @@ fn transcript(stdout: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// The probe's artifact: built when this checkout has a compiler, the committed fixture
+/// when it does not (`fixtures/fiber/park-frame.wasm`).
+///
+/// **Committed for the same reason the other fiber artifacts are**: CI has no compiler, and
+/// a gate that only runs on a machine with one is not the gate this round needs. The
+/// fixture is the artifact *under test* — the park import and the transcript are what it
+/// must produce — so pinning it is the assertion, not a shortcut around one.
+fn probe() -> std::path::PathBuf {
+    guest_or_fixture("park-frame", fiber_fixtures_dir())
 }
 
 /// The `iteration=` number on a log line, whatever the rest of it says.
@@ -53,8 +64,8 @@ fn iteration_of(line: &str) -> u64 {
 
 #[test]
 fn a_handle_await_imports_the_park() {
-    let bytes = std::fs::read(guest("park-frame"))
-        .expect("the probe artifact is built by `guest()`");
+    let bytes = std::fs::read(probe())
+        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", probe().display()));
     let text = String::from_utf8_lossy(&bytes);
     assert!(
         text.contains("scheduler") && text.contains("park"),
@@ -73,7 +84,7 @@ fn the_frame_clock_posts_and_the_guest_resumes_once_per_post() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .env("TENSION_ITERATIONS", "1")
-        .arg(guest("park-frame"))
+        .arg(probe())
         .output()
         .expect("the interpreter runs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

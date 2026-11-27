@@ -12,6 +12,7 @@
     "build:codegen": "node tools/codegen/generate.mjs --schema schema/ogre.json --out-ts tension-framework/assembly/ogre/generated --out-h tension-ogre/src/generated",
     "build:framework": "node scripts/build-framework.mjs",
     "build:examples": "node scripts/build-examples.mjs",
+    "run:examples": "node scripts/run-examples.mjs",
     "build:native": "node scripts/build-native.mjs",
     "bootstrap": "node scripts/bootstrap.mjs",
     "pack:all": "node scripts/pack-all.mjs",
