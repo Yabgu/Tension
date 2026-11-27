@@ -968,12 +968,17 @@ fn run_on_fiber(
                 // suspended for it, so this is a real frame and not a spin.
                 std::thread::sleep(std::time::Duration::from_millis(HOST_LOOP_SLICE_MS as u64));
             }
+            // **The delivered class, not the park's** (DL58). A guest parks on the family's
+            // success class (the handle's stamp) and the producer answers with whichever
+            // member actually arrived — `AI_READY` for a chunk, `AI_DONE` for the end. A line
+            // that named only the park made five different events read as five identical
+            // ones, which is exactly the flattening this round removed from the guest.
             logging::log(
                 Level::Info,
                 "fiber",
                 &format!(
-                    "completing class {} key {} with {value} → resume",
-                    park.class, park.key
+                    "completing class {} (parked on {}) key {} with {value} → resume",
+                    class, park.class, park.key
                 ),
             );
             if trace_iterations {
