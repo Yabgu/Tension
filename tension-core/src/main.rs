@@ -810,19 +810,31 @@ fn run_on_fiber(
     mut body: impl FnMut(&mut Store<HostState>, wasmtime::Instance) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut staged = completions;
+    // **The frame clock reaches the root's own park too** (DL56). `host_loop` posts one
+    // frame per pass, and a task that parks *after* `__start` returns gets it there —
+    // measured on `examples/async-io`: `post frame … at iteration=N` and `resume [0] at
+    // iteration=N`, three times, then `--- end ---`. A root that parks **inside**
+    // `__start` never reaches `host_loop` at all: it parks on the fiber this function
+    // drives, and this producer is the only thing asked. So the same clock ticks here —
+    // same constant, same 16 ms, one frame per park — which is the engine's frame period,
+    // not a new policy.
+    //
+    // **Only the frame family.** Every other class needs a producer this path does not
+    // have (an AI result, a job), and those still fall through to the named refusal.
+    let trace_iterations = std::env::var_os("TENSION_ITERATIONS").is_some();
+    let mut iteration: u64 = 0;
     let outcome = tension_core::fiber::run(
         &mut *store,
         instance,
         |store, instance| body(store, instance),
         |park| {
-            let index = staged
-                .iter()
-                .position(|(class, key, _)| *class == park.class && *key == park.key)?;
-            let (_, _, value) = staged.remove(index);
-            // **Two lines, one fact each.** A single line naming both the park and
-            // the completion would make a transcript unable to say which came
-            // first — and "the wake came after the park" is the ordering I70 is
-            // about.
+            iteration += 1;
+            if trace_iterations {
+                logging::log(Level::Info, "iter", &format!("root iteration={iteration}"));
+            }
+            // **The park is logged first, then the post.** "The wake came after the
+            // park" is the ordering I70 is about, so a transcript has to be able to read
+            // it off the lines.
             logging::log(
                 Level::Info,
                 "fiber",
@@ -831,6 +843,32 @@ fn run_on_fiber(
                     park.task, park.class, park.key
                 ),
             );
+            let index = staged
+                .iter()
+                .position(|(class, key, _)| *class == park.class && *key == park.key);
+            let is_frame = park.class == session::arena::CLASS_FRAME && park.key == 0;
+            let (value, from_clock) = match index {
+                Some(index) => {
+                    let (_, _, value) = staged.remove(index);
+                    (value, false)
+                }
+                // The host's own clock, waited out and then answered: the guest is
+                // suspended for the slice, which is what a frame *is*.
+                None if is_frame => (0, true),
+                None => return None,
+            };
+            if from_clock {
+                if trace_iterations {
+                    logging::log(
+                        Level::Info,
+                        "iter",
+                        &format!("post frame to task {} at root iteration={iteration}", park.task),
+                    );
+                }
+                // One host slice, the same period `host_loop` waits. The guest is
+                // suspended for it, so this is a real frame and not a spin.
+                std::thread::sleep(std::time::Duration::from_millis(HOST_LOOP_SLICE_MS as u64));
+            }
             logging::log(
                 Level::Info,
                 "fiber",
@@ -839,6 +877,13 @@ fn run_on_fiber(
                     park.class, park.key
                 ),
             );
+            if trace_iterations {
+                logging::log(
+                    Level::Info,
+                    "iter",
+                    &format!("resume [{}] at root iteration={iteration}", park.task),
+                );
+            }
             Some(value)
         },
     )?;

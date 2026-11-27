@@ -182,6 +182,19 @@ const ASYNC_ON_MAIN_FIBER_FLAGS = [
   "--stackful-backend", "fiber",
 ];
 
+/**
+ * The park probes (DL56). `--stackful-backend fiber` because the frame clock is wired on
+ * that path, and `--exportStart __start` because the boot body must be an export the host
+ * calls on a fiber — the shape the SDK builds and the one `main.rs` looks up.
+ */
+const PROBE_FLAGS = [
+  "--runtime", "incremental",
+  "--target", "release",
+  "--optimizeLevel", "0",
+  "--stackful-backend", "fiber",
+  "--exportStart", "__start",
+];
+
 const FIBER_FLAGS = [
   // `THREAD_FLAGS` minus the `--enable stack-switching` **pair**, keeping every
   // other flag in order — a filter that dropped the two tokens by value would
@@ -337,6 +350,7 @@ const FOLDER_FLAGS = {
   "thread": THREAD_FLAGS,
   "mask": THREAD_FLAGS,
   "fiber": FIBER_FLAGS,
+  "probe": PROBE_FLAGS,
   "atomic": THREAD_FLAGS,
 };
 

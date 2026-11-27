@@ -58,8 +58,8 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:498` |
-| `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1597`, `tension-core/src/scheduler.rs:516` |
+| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:509` |
+| `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1597`, `tension-core/src/scheduler.rs:527` |
 
 ## `session`
 

@@ -1,0 +1,5 @@
+probe: park     frame=0 resumes=0
+probe: resume   frame=0 resumes=1
+probe: park     frame=1 resumes=1
+probe: resume   frame=1 resumes=2
+probe: done     resumes=2

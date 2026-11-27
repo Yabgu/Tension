@@ -50,7 +50,7 @@ use wasmtime::{Caller, Linker};
 use crate::session::arena::{
     CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY, CLASS_COUNT, CLASS_DEVICE_LOST, CLASS_FRAME,
     CLASS_INPUT_KEY, CLASS_INPUT_MOUSE, CLASS_JOB_DONE, CLASS_JOB_FAILED, CLASS_LOG,
-    CLASS_RESOURCE_FAILED, CLASS_RESOURCE_READY, CLASS_SUBMISSION_REJECTED,
+    CLASS_RESOURCE_FAILED, CLASS_RESOURCE_READY, CLASS_SUBMISSION_REJECTED, class_name,
 };
 use crate::HostState;
 /// **The table is the library's type, adopted here (DL18).** It used to be defined
@@ -348,6 +348,17 @@ impl Scheduler {
     /// not whatever completes it later; the family resolution is what makes a
     /// failure class find the same task.
     pub fn park(&mut self, task_id: u64, class: u32, key: u32) -> Result<(), ParkRefusal> {
+        // **Every park, named, when the operator asks for the loop's trace** (DL56). The
+        // frame clock's own posts are logged by the loop; this is the other half — what
+        // the guest is waiting for in the first place, which is the question a hang
+        // raises and a transcript alone cannot answer.
+        if std::env::var_os("TENSION_ITERATIONS").is_some() {
+            crate::logging::log(
+                crate::logging::Level::Info,
+                "iter",
+                &format!("park task={task_id} class={class} ({}) key={key}", class_name(class)),
+            );
+        }
         let family = family_of(class);
         let Some(bound) = key_capacity(family) else {
             self.class_refusals += 1;
