@@ -32,11 +32,22 @@
 // truncation cannot occur in the decode path — a consequence of the
 // read_line contract, not a separate fix.
 
+import { Task, TaskRecord } from "~lib/task";
+import { CLASS_IO_READY } from "./runtime/wire";
+
+import { __inputSupported } from "~lib/io";
+
 @external("tension::io", "print")
 declare function hostPrint(ptr: usize, len: i32): void;
 
 @external("tension::io", "read_line")
 declare function hostReadLine(ptr: usize, cap: i32): i32;
+
+@external("tension::io", "input_arm")
+declare function hostInputArm(source: i32): i32;
+
+@external("tension::io", "input_read")
+declare function hostInputRead(source: i32, ptr: usize, cap: i32): i32;
 
 @external("tension::io", "arg_count")
 declare function hostArgCount(): i32;
@@ -88,6 +99,87 @@ export function readLine(): string | null {
   const buf = new ArrayBuffer(need > 0 ? need : 1);
   const n = hostReadLine(changetype<usize>(buf), need > 0 ? need : 1);
   if (n < 0) return null;
+  return n > 0 ? String.UTF8.decodeUnsafe(changetype<usize>(buf), n) : "";
+}
+
+// ── input as an event, not a blocking call (DL57, I135) ────────────────────
+//
+// **What this replaces.** `readLine()` reads stdin inline. On the fiber backend the guest's
+// stack *is* a host thread, so that call blocks the host's own loop — the loop that would
+// have delivered the next line. Measured four ways on `examples/ai` (DL56): the first read
+// never returned, the prompt never printed, and there were **zero parks**, because the guest
+// was not waiting in the completion ABI at all. So a guest that wants input now awaits an
+// event, and the host reads on its own thread.
+//
+// **The shape carries a second consumer unchanged.** `source` is the key, and a socket or a
+// file reader posts on the same family with its own descriptor: the guest changes the
+// number, not the program.
+//
+//     inputArm(0);
+//     let event: InputEvent = await inputTask(0);
+//     if (event == InputEvent.Line) { let line: string = readLineNow(); }
+//
+// **One await per event.** The handle resolves on the next thing the source produces, so a
+// loop awaits once per line and prints it as it arrives — never "is there more yet".
+
+/** What a completed input wait names. The **event**, never a byte count. */
+export enum InputEvent {
+  /** A line arrived; take it with `readLineNow()`. */
+  Line = 0,
+  /** The source produced nothing more: stdio closed, a socket hung up, a file ended. */
+  End = 1,
+}
+
+/** `input_arm`'s answer when the host has no such source. */
+export const INPUT_NO_SOURCE: i32 = -38;
+
+/**
+ * Start the host reading `source` on its own thread. Idempotent; `0` on success.
+ *
+ * 0 is stdin. Any other number is a source this build does not have yet, and answers
+ * `INPUT_NO_SOURCE` rather than parking a task on a completion nobody will post.
+ */
+export function inputArm(source: i32): i32 {
+  return hostInputArm(source);
+}
+
+/**
+ * The awaitable for the next event on `source`.
+ *
+ * The handle carries `(IO_READY family, source)` — the same stamped-record shape `rt.job`
+ * and `rt.stream` build — so `await` parks on it and the host's post settles it. The value
+ * the await answers is the {@link InputEvent}.
+ */
+export function inputTask(source: i32): Task<InputEvent> {
+  // **Compile-time, not run-time.** A backend that cannot park a producer handle compiles
+  // this call to an error naming itself, so there is no build in which this program waits
+  // forever or reads a zero nobody posted (DL57, decision 5).
+  __inputSupported();
+  const record = new TaskRecord();
+  record.class_ = CLASS_IO_READY;
+  record.key = source;
+  const handle = new Task<InputEvent>();
+  handle._record = record;
+  return handle;
+}
+
+/**
+ * Pop the line the last {@link InputEvent.Line} announced, from `source` (0 = stdin).
+ *
+ * Called **after** the event, never instead of waiting for one: the queue is filled by the
+ * reader thread before it posts, so the line an event names is already there.
+ *
+ * The `source` argument is the whole of what changes between consumers — a caller awaiting
+ * a file source writes `readLineNow(1)` and not one other line of its program.
+ */
+export function readLineNow(source: i32 = 0): string {
+  // Same probe/consume split as `readLine`: the probe reports the length and does not
+  // consume, so a caller that only wants to know whether a line is there can ask twice.
+  const need = hostInputRead(source, 0, 0);
+  if (need < 0) return "";
+  const buf = new ArrayBuffer(need > 0 ? need : 1);
+  const n = hostInputRead(source, changetype<usize>(buf), need > 0 ? need : 1);
+  if (n < 0) return "";
   return n > 0 ? String.UTF8.decodeUnsafe(changetype<usize>(buf), n) : "";
 }
 

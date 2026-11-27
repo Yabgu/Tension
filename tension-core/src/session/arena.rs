@@ -123,7 +123,7 @@ pub const FAULT_SHUTDOWN: u32 = 4;
 /// 0.6.0a appended the AI family (10-12) after `FRAME`. Appending — never
 /// inserting — is the rule: a class id is a subscription key and a wire value,
 /// so every existing id had to stay where it was.
-pub const CLASS_COUNT: usize = 13;
+pub const CLASS_COUNT: usize = 15;
 
 pub const MODE_DIRECT: u32 = 1;
 pub const MODE_BATCHED: u32 = 2;
@@ -233,6 +233,23 @@ pub const CLASS_FRAME: u32 = 9;
 pub const CLASS_AI_READY: u32 = 10;
 pub const CLASS_AI_DONE: u32 = 11;
 pub const CLASS_AI_ERROR: u32 = 12;
+/// **Input readiness, as a completion rather than a blocking call** (DL57, I135).
+///
+/// `tension::io::read_line` used to read stdin inline, on whatever thread the guest was
+/// running on — which under the fiber backend is the host's own loop thread, so the read
+/// blocked the thing that would have delivered the line. The reader now runs on its own
+/// thread and posts a completion; a guest that wants a line awaits `IO_READY` and then reads
+/// from the buffered queue.
+///
+/// **Two classes, not a status word**, for the reason §3 gives about the AI family: the
+/// delivered class is the discriminator. `EOF` is a separate event from a line, and a
+/// zero payload must not have to mean either.
+///
+/// `key` is the **source**: 0 is stdin, and any other value names a second source on the
+/// same family — the shape a socket or a file reader will post through unchanged.
+pub const CLASS_IO_READY: u32 = 13;
+/// The source will produce no more: stdio closed, a socket hung up, a file hit EOF.
+pub const CLASS_IO_EOF: u32 = 14;
 
 /// The thirteen classes as `(id, name)`, in id order — the catalogue the ids
 /// above name, in one place. `docs/session.md` §3 has the rationale; this is
@@ -251,6 +268,8 @@ pub const CLASSES: [(u32, &str); CLASS_COUNT] = [
     (CLASS_AI_READY, "AI_READY"),
     (CLASS_AI_DONE, "AI_DONE"),
     (CLASS_AI_ERROR, "AI_ERROR"),
+    (CLASS_IO_READY, "IO_READY"),
+    (CLASS_IO_EOF, "IO_EOF"),
 ];
 
 /// A class's name, or `"<unknown>"` for an id this chunk does not define.
@@ -270,7 +289,7 @@ pub fn class_name(id: u32) -> &'static str {
 /// makes `QueueFull` and the sub-ring's full case unreachable on a healthy
 /// stream (0.6.0a's ring invariant).
 pub const DEFAULT_RING_CAPACITIES: [u32; CLASS_COUNT] =
-    [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256, 16, 16, 16];
+    [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256, 16, 16, 16, 16, 4];
 
 /// The default delivery mode per class, in class-id order (`docs/session.md` §3).
 ///
@@ -292,6 +311,8 @@ pub const DEFAULT_CLASS_MODES: [u32; CLASS_COUNT] = [
     MODE_BATCHED,  // 10 AI_READY
     MODE_BATCHED,  // 11 AI_DONE
     MODE_BATCHED,  // 12 AI_ERROR
+    MODE_BATCHED,  // 13 IO_READY — a line per post, the reader's own thread
+    MODE_BATCHED,  // 14 IO_EOF   — posted once, when the source closes
 ];
 
 /// `class_info`'s `flags` word: the class is subscribed, so a producer that can
@@ -1682,7 +1703,11 @@ mod tests {
     /// `3_451_714_980` was the value before 0.6.0a appended the AI classes:
     /// `CLASS_COUNT` (10 -> 13) and `SESSION_INFO_SIZE` (128 -> 144) are both
     /// folded in, so the bump moves the hash by design.
-    const RECORDED_LAYOUT_HASH: u32 = 786_288_195;
+    /// `3_289_783_349` is DL57's, from appending the two input classes
+    /// (`CLASS_COUNT` 13 -> 15): a line arriving from the reader thread is a
+    /// completion, not a blocking call, and a guest built for 13 classes must not
+    /// talk to a host that has 15.
+    const RECORDED_LAYOUT_HASH: u32 = 3_289_783_349;
 
     #[test]
     fn canary_lattice_verifies_and_detects_one_byte() {

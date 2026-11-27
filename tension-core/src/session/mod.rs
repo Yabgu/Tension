@@ -1893,6 +1893,11 @@ mod lifecycle {
             HostState {
                 args: Vec::new(),
                 pending_line: None,
+            line_queue: None,
+            line_eof: None,
+            file_queues: Default::default(),
+            file_eofs: Default::default(),
+            file_armed: Default::default(),
                 res: std::sync::Arc::new(std::sync::Mutex::new(
                     crate::res::MountTable::new(),
                 )),
@@ -2343,6 +2348,11 @@ mod verbs {
             HostState {
                 args: Vec::new(),
                 pending_line: None,
+            line_queue: None,
+            line_eof: None,
+            file_queues: Default::default(),
+            file_eofs: Default::default(),
+            file_armed: Default::default(),
                 res: std::sync::Arc::new(std::sync::Mutex::new(
                     crate::res::MountTable::new(),
                 )),

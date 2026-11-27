@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-95 imports across 13 modules: 63 registered by the host in 10 modules, 32 by 3 capability adapters.
+98 imports across 13 modules: 66 registered by the host in 10 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -29,8 +29,8 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:1549`, `tension-core/src/host/io.rs:44` |
-| `emit` | `(i32, i32)` | `tension-core/src/host/io.rs:89` |
+| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:1549`, `tension-core/src/host/io.rs:51` |
+| `emit` | `(i32, i32)` | `tension-core/src/host/io.rs:96` |
 | `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:1504` |
 | `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:1515` |
 
@@ -58,8 +58,9 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:509` |
-| `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1597`, `tension-core/src/scheduler.rs:527` |
+| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:527` |
+| `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1597`, `tension-core/src/scheduler.rs:545` |
+| `completionClass` | `(i64) → i32` | `tension-core/src/scheduler.rs:559` |
 
 ## `session`
 
@@ -95,14 +96,14 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `session_create` | `(i32, i32) → i32` | `tension-core/src/ai/mod.rs:818` |
-| `session_add` | `(i32, i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:857` |
-| `session_generate` | `(i32) → i32` | `tension-core/src/ai/mod.rs:867` |
-| `session_read` | `(i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:875` |
-| `session_state` | `(i32) → i32` | `tension-core/src/ai/mod.rs:892` |
-| `session_cancel` | `(i32) → i32` | `tension-core/src/ai/mod.rs:900` |
-| `session_reset` | `(i32) → i32` | `tension-core/src/ai/mod.rs:908` |
-| `session_close` | `(i32) → i32` | `tension-core/src/ai/mod.rs:916` |
+| `session_create` | `(i32, i32) → i32` | `tension-core/src/ai/mod.rs:834` |
+| `session_add` | `(i32, i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:873` |
+| `session_generate` | `(i32) → i32` | `tension-core/src/ai/mod.rs:883` |
+| `session_read` | `(i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:891` |
+| `session_state` | `(i32) → i32` | `tension-core/src/ai/mod.rs:908` |
+| `session_cancel` | `(i32) → i32` | `tension-core/src/ai/mod.rs:916` |
+| `session_reset` | `(i32) → i32` | `tension-core/src/ai/mod.rs:924` |
+| `session_close` | `(i32) → i32` | `tension-core/src/ai/mod.rs:932` |
 
 ## `tension::audio`
 
@@ -142,12 +143,14 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/thread.rs:2735`, `tension-core/src/host/io.rs:59` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:2750`, `tension-core/src/host/io.rs:109` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:124` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:2778`, `tension-core/src/host/io.rs:139` |
-| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:2774`, `tension-core/src/host/io.rs:192` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:2775`, `tension-core/src/host/io.rs:198` |
+| `print` | `(i32, i32)` | `tension-core/src/thread.rs:2737`, `tension-core/src/host/io.rs:66` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:2752`, `tension-core/src/host/io.rs:116` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:131` |
+| `input_arm` | `(i32) → i32` | `tension-core/src/host/io.rs:164` |
+| `input_read` | `(i32, i32, i32) → i32` | `tension-core/src/host/io.rs:281` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:2780`, `tension-core/src/host/io.rs:322` |
+| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:2776`, `tension-core/src/host/io.rs:415` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:2777`, `tension-core/src/host/io.rs:421` |
 
 ## `tension::platform`
 

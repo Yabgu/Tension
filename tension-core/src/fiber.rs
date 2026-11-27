@@ -430,6 +430,14 @@ thread_local! {
     /// directly after the park returns. One word, on the thread that owns the
     /// fiber, for one resume — the same discipline as the handle above.
     static COMPLETION: Cell<i32> = const { Cell::new(0) };
+    /// **Which class the wake arrived as**, for `scheduler::completionClass`.
+    ///
+    /// The payload alone cannot describe a family whose members mean different things —
+    /// `AI_READY` (bytes waiting), `AI_DONE` (over) and `AI_ERROR` (failed) are three
+    /// events with one word between them. The host's producer is the only side that knows
+    /// which arrived, so it answers both and this carries the class the same way
+    /// `COMPLETION` carries the value: one word, one resume, one thread (DL57).
+    static COMPLETION_CLASS: Cell<i32> = const { Cell::new(-1) };
 }
 
 /// **Whether a park here can suspend** — i.e. whether this thread is inside
@@ -476,6 +484,13 @@ pub fn completion_value() -> i32 {
     COMPLETION.with(|cell| cell.get())
 }
 
+/// **What `scheduler::completionClass(task_id)` answers**: the class the wake that resumed
+/// this task arrived as. `-1` before any keyed completion, which the guest reads as "no
+/// class" rather than as class 0 (`DEVICE_LOST`).
+pub fn completion_class() -> i32 {
+    COMPLETION_CLASS.with(|cell| cell.get())
+}
+
 // ---------------------------------------------------------------------------
 // The executor
 // ---------------------------------------------------------------------------
@@ -491,9 +506,11 @@ pub fn completion_value() -> i32 {
 /// decision a host makes about its own completions.
 ///
 /// `producer` is called **after** the guest has parked, with the park in hand. It
-/// answers the payload to resume with, or `None` when nothing will ever complete
-/// this park. That call order *is* the I70 ordering (park, then wake), so no test
-/// has to arrange it.
+/// answers the payload **and the class the wake arrives as**, or `None` when nothing will
+/// ever complete this park. Two words rather than one: the class is what a multi-member
+/// family is read by (`rt.classify` dispatches on it), and making it part of the answer
+/// means a producer cannot forget to say which event it delivered. That call order *is* the
+/// I70 ordering (park, then wake), so no test has to arrange it.
 ///
 /// `store` is borrowed for the whole run: the fiber executes on the calling
 /// thread, so no `Send` bound is needed and nothing is moved between threads.
@@ -505,7 +522,7 @@ pub fn run<T, C, P>(
 ) -> anyhow::Result<Outcome>
 where
     C: FnMut(&mut Store<T>, Instance) -> anyhow::Result<i32>,
-    P: FnMut(Park) -> Option<i32>,
+    P: FnMut(Park) -> Option<(i32, u32)>,
 {
     let stack = FiberStack::new(512 * 1024, true)
         .map_err(|_| anyhow::anyhow!("the fiber stack could not be allocated"))?;
@@ -538,7 +555,7 @@ where
 
     // -- the loop: one resume per completion ---------------------------------
     loop {
-        let Some(value) = producer(parked) else {
+        let Some((value, class)) = producer(parked) else {
             // Nothing will complete this park. The fiber is still suspended and
             // cannot be dropped; leaking it is the only sound choice, and the
             // refusal below is what makes the leak visible instead of a hang.
@@ -548,6 +565,7 @@ where
             return Ok(Outcome::Stranded(Stranded { park: parked }));
         };
         COMPLETION.with(|cell| cell.set(value));
+        COMPLETION_CLASS.with(|cell| cell.set(class as i32));
         match slot.as_ref().expect("the fiber is live").resume(()) {
             Ok(status) => {
                 if let Some(fiber) = slot.take() {

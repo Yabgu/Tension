@@ -186,6 +186,31 @@ impl ClassQueue {
         Ok(seq)
     }
 
+    /// Take **one** event whose `a` is `key`, oldest first — the push path's read for a
+    /// class whose completions are consumed one per parked task rather than flushed in a
+    /// batch (DL57's input family).
+    ///
+    /// `drain` is the epoch's accessor and empties the queue; a producer that used it for a
+    /// one-shot completion would discard the events posted while the guest was still
+    /// suspended — measured: two lines piped in, the first resumed the guest and the second
+    /// vanished, so the second await never woke.
+    /// The oldest event whose `a` is `key`, **without** removing it.
+    ///
+    /// A producer that reads several classes and then keeps one cannot `take` from each:
+    /// the losers would be consumed and lost — measured, `IO_EOF` was eaten by the park
+    /// that answered `IO_READY`, so the guest received its lines and then hung on the end.
+    /// Peek both, take the winner.
+    pub fn peek_matching(&self, key: u32) -> Option<EventFields> {
+        let events = self.events.lock().expect("the queue mutex is never poisoned");
+        events.iter().find(|event| event.a == key).copied()
+    }
+
+    pub fn take_matching(&self, key: u32) -> Option<EventFields> {
+        let mut events = self.events.lock().expect("the queue mutex is never poisoned");
+        let at = events.iter().position(|event| event.a == key)?;
+        Some(events.remove(at).expect("position came from this deque"))
+    }
+
     /// Take everything waiting, in post order. The epoch's entry point.
     pub fn drain(&self) -> Vec<EventFields> {
         let mut events = self.events.lock().expect("the queue mutex is never poisoned");

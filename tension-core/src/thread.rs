@@ -2593,7 +2593,9 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
                     take(&pool, park.task, park.class, park.key)
                 });
                 let delivery = delivery?;
-                Some(delivery.payload)
+                // The class travels with the payload: a worker's served body reads it
+                // through `rt.classify` the same way the plain-guest producer's does (DL57).
+                Some((delivery.payload, delivery.class))
             },
         )? {
             crate::fiber::Outcome::Done(status) => status,

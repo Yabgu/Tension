@@ -102,10 +102,14 @@ function loadSession(path, expectedHash) {
   }
 
   const caps = cfg.ring_capacities;
-  // 0.6.0a: the AI family (10-12) appended after FRAME, so this chunk has 13.
-  if (!Array.isArray(caps) || caps.length !== 13) {
+  // 0.6.0a appended the AI family (10-12); DL57 appended the input pair (13-14), so this
+  // chunk has 15. The number is pinned here on purpose: it is the one place the generator
+  // states how many classes the arena it describes contains, and a chunk that changes the
+  // count without changing this line would produce a guest built against a shape it does
+  // not have.
+  if (!Array.isArray(caps) || caps.length !== 15) {
     fail(`ring_capacities has ${Array.isArray(caps) ? caps.length : 'no'} entries; ` +
-         'this chunk has 13 classes');
+         'this chunk has 15 classes');
   }
   if (!caps.every((c) => Number.isInteger(c) && c > 0)) {
     fail('every ring capacity must be a positive integer');

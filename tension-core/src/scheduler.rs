@@ -51,6 +51,7 @@ use crate::session::arena::{
     CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY, CLASS_COUNT, CLASS_DEVICE_LOST, CLASS_FRAME,
     CLASS_INPUT_KEY, CLASS_INPUT_MOUSE, CLASS_JOB_DONE, CLASS_JOB_FAILED, CLASS_LOG,
     CLASS_RESOURCE_FAILED, CLASS_RESOURCE_READY, CLASS_SUBMISSION_REJECTED, class_name,
+    CLASS_IO_READY, CLASS_IO_EOF,
 };
 use crate::HostState;
 /// **The table is the library's type, adopted here (DL18).** It used to be defined
@@ -77,6 +78,11 @@ pub fn family_of(class: u32) -> u32 {
         CLASS_JOB_DONE | CLASS_JOB_FAILED => CLASS_JOB_DONE,
         CLASS_RESOURCE_READY | CLASS_RESOURCE_FAILED => CLASS_RESOURCE_READY,
         CLASS_AI_READY | CLASS_AI_DONE | CLASS_AI_ERROR => CLASS_AI_DONE,
+        // **One family for input readiness and its end** (DL57): a line and an EOF resolve
+        // the same parked task, and the delivered class says which arrived. Keyed on
+        // `IO_READY`'s id for the same reason the AI family is keyed on `AI_DONE`'s — the
+        // success class is the one a caller awaits.
+        CLASS_IO_READY | CLASS_IO_EOF => CLASS_IO_READY,
         // Everything else is its own family.
         other => other,
     }
@@ -107,6 +113,10 @@ pub fn key_capacity(family: u32) -> Option<u32> {
         CLASS_FRAME => Some(0),
         CLASS_INPUT_KEY | CLASS_INPUT_MOUSE => Some(255),
         CLASS_LOG => Some(1023),
+        // **A key per source** (DL57): 0 is stdin, and a socket or a file reader posts on
+        // the same family with the descriptor it was opened under. 64 is the arena's
+        // per-class ring bound for this pair (`arena::DEFAULT_RING_CAPACITIES`).
+        CLASS_IO_READY => Some(63),
         CLASS_DEVICE_LOST | CLASS_SUBMISSION_REJECTED => Some(0),
         _ => None,
     }
@@ -475,6 +485,14 @@ pub fn scheduler_park(caller: &mut Caller<'_, HostState>, task_id: i64, class: i
     // published for exactly one wasm call, and only the fiber executor publishes
     // one.
     if tension_core::fiber::suspend_current(tension_core::fiber::Park { task: task_id, class, key }) {
+        // **The record goes when the resume happens** (DL57). `suspend_current` returns
+        // only after the executor has resumed this task, so by here the park is answered —
+        // and leaving the entry would keep `parked()` above zero, which is the number the
+        // host loop's exit condition reads. Measured: a guest that finished printed its
+        // last line and then never exited, because the loop saw an outstanding park that
+        // had already been served. The early-completion arm below takes its record back for
+        // the same reason; this is the fiber's half of the same rule.
+        let _ = caller.data_mut().scheduler.take(class, key);
         return;
     }
     // A completion that arrived before this park (§4.9): hand it over now. The
@@ -529,6 +547,20 @@ pub fn link_scheduler(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "completion",
         |_caller: Caller<'_, HostState>, _task_id: i64| -> i32 {
             tension_core::fiber::completion_value()
+        },
+    )?;
+    // **The class the wake arrived as** (DL57), the second half of the same answer.
+    //
+    // `completion` carries the payload, which is enough for a one-meaning class (a frame's
+    // tick, a line's arrival) and not enough for a family whose members *are* the event:
+    // `AI_READY`, `AI_DONE` and `AI_ERROR` differ only in the class, and `rt.classify`
+    // dispatches on it. `-1` before any keyed completion, so "no class" cannot be mistaken
+    // for class 0 (`DEVICE_LOST`).
+    linker.func_wrap(
+        "scheduler",
+        "completionClass",
+        |_caller: Caller<'_, HostState>, _task_id: i64| -> i32 {
+            tension_core::fiber::completion_class()
         },
     )?;
     Ok(())

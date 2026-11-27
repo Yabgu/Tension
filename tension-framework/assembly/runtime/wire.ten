@@ -84,6 +84,16 @@ export const CLASS_FRAME: u32 = 9;
 export const CLASS_AI_READY: u32 = 10;
 export const CLASS_AI_DONE: u32 = 11;
 export const CLASS_AI_ERROR: u32 = 12;
+/**
+ * Input readiness as a completion (DL57, I135): a line arrived, or the source ended.
+ *
+ * Two classes rather than one, and neither carries a status word in its payload: the
+ * delivered class *is* the discriminator, so `b == 0` never has to mean both "an empty
+ * line" and "over". `key` is the source — 0 is stdin, and a socket or a file reader posts
+ * on the same family with the descriptor it was opened under.
+ */
+export const CLASS_IO_READY: u32 = 13;
+export const CLASS_IO_EOF: u32 = 14;
 
 /** The twelve region kinds, in `kind == index` order; `arena::REGIONS` is the
  * authority. */

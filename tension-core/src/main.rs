@@ -127,6 +127,30 @@ fn default_adapter() -> Box<dyn audio::AudioAdapter> {
 pub(crate) struct HostState {
     pub(crate) args: Vec<String>,
     pub(crate) pending_line: Option<Vec<u8>>,
+    /// **The awaitable input queue** (DL57, I135).
+    ///
+    /// A reader thread owns stdin once a guest arms the source (`input_arm`), pushes each
+    /// complete line here, and posts `IO_READY` for it. `read_line` pops from this instead
+    /// of calling `io::stdin().read_line` — which is the defect the round fixes: that call
+    /// blocks whatever thread the guest is on, and under the fiber backend that thread is
+    /// the host's own loop, so the line the loop was waiting to deliver could never be
+    /// read.
+    ///
+    /// `None` until armed, so a synchronous guest's `read_line` keeps blocking exactly as
+    /// it did: the io example is a sync reader and its behaviour is not supposed to change.
+    pub(crate) line_queue: Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>>,
+    /// Set once the armed reader has seen end-of-input. `read_line` answers `-1` from this
+    /// and from an empty queue, which is EOF and not "nothing yet".
+    pub(crate) line_eof: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// **The same pair, per non-stdin source** (DL57). 0 (stdin) has the two fields above
+    /// because it is the one every guest has; a file or a socket gets an entry here, keyed by
+    /// its source id, and `read_line` is told which queue to pop by the `source` the caller
+    /// passed. One import, several sources — which is what makes the guest's code identical
+    /// for both.
+    pub(crate) file_queues: std::collections::HashMap<i32, std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>>,
+    pub(crate) file_eofs: std::collections::HashMap<i32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Sources already armed, so arming twice does not spawn a second reader.
+    pub(crate) file_armed: std::collections::HashSet<i32>,
     /// The mount table: `--res` paks (flat) followed by whatever a guest
     /// mounted, in load order. Each owns its bytes (1x memory) and the guest's
     /// fd space indexes it, so an fd's high bits are a mount index whichever
@@ -401,6 +425,11 @@ impl HostState {
         HostState {
             args: config.args.clone(),
             pending_line: None,
+            line_queue: None,
+            line_eof: None,
+            file_queues: Default::default(),
+            file_eofs: Default::default(),
+            file_armed: Default::default(),
             res: std::sync::Arc::clone(&config.res),
             write_root: config.write_root.clone(),
             write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
@@ -810,6 +839,9 @@ fn run_on_fiber(
     mut body: impl FnMut(&mut Store<HostState>, wasmtime::Instance) -> anyhow::Result<i32>,
 ) -> anyhow::Result<i32> {
     let mut staged = completions;
+    // Cloned before the closure: the producer runs inside `fiber::run`, which holds the
+    // store mutably, and the posting side is an `Arc` — one handle, two readers.
+    let posting_for_producer = store.data().posting.clone();
     // **The frame clock reaches the root's own park too** (DL56). `host_loop` posts one
     // frame per pass, and a task that parks *after* `__start` returns gets it there —
     // measured on `examples/async-io`: `post frame … at iteration=N` and `resume [0] at
@@ -847,14 +879,81 @@ fn run_on_fiber(
                 .iter()
                 .position(|(class, key, _)| *class == park.class && *key == park.key);
             let is_frame = park.class == session::arena::CLASS_FRAME && park.key == 0;
-            let (value, from_clock) = match index {
+            // **Input is answered from the posting queue, not from the clock** (DL57).
+            // A reader thread pushed a line and posted `IO_READY`; this producer's job is
+            // the same shape the clock's is — wait for the event the guest asked for, then
+            // answer it — with the wait on the session's own condition variable rather
+            // than a fixed slice. The guest stays suspended for the whole wait, which is
+            // the difference between awaiting a line and polling for one.
+            let is_io = park.class == session::arena::CLASS_IO_READY
+                || park.class == session::arena::CLASS_IO_EOF
+                // **The AI family rides the same producer** (DL57). A guest awaiting a
+                // reply chunk parks on `(AI family, session)`; the stream that fills it is
+                // the adapter's, and its posts land in the same `posting` queues the input
+                // reader's do. Three classes, one family: the *delivered* class is what the
+                // guest reads, which is why the answer carries it.
+                || park.class == session::arena::CLASS_AI_READY
+                || park.class == session::arena::CLASS_AI_DONE
+                || park.class == session::arena::CLASS_AI_ERROR;
+            let mut from_io: Option<(u32, i32)> = None;
+            if is_io && index.is_none() {
+                let posting = posting_for_producer.clone();
+                loop {
+                    // Both classes are one family: the guest's handle was stamped with
+                    // `IO_READY` and the delivered class replaces it, so read the family's
+                    // pair and let the record carry which arrived.
+                    // **One event per park**, and the oldest across both classes — `seq`
+                    // is the producer's own monotonic order, so `READY`, `READY`, `EOF`
+                    // arrive in the order the reader posted them even though they are two
+                    // queues. Taking all and keeping one lost every event posted while the
+                    // guest was suspended (measured: two lines, one wake).
+                    let mut best: Option<(u64, u32)> = None;
+                    for class in [
+                        session::arena::CLASS_IO_READY,
+                        session::arena::CLASS_IO_EOF,
+                        session::arena::CLASS_AI_READY,
+                        session::arena::CLASS_AI_DONE,
+                        session::arena::CLASS_AI_ERROR,
+                    ] {
+                        let Some(queue) = posting.queue(class) else { continue };
+                        if let Some(event) = queue.peek_matching(park.key) {
+                            if best.map(|(seq, _)| event.seq < seq).unwrap_or(true) {
+                                best = Some((event.seq, class));
+                            }
+                        }
+                    }
+                    // Take the winner only. Peeking both is what keeps the loser queued.
+                    let found = best.and_then(|(_, class)| {
+                        posting
+                            .queue(class)
+                            .and_then(|queue| queue.take_matching(park.key))
+                            .map(|event| (class, event.b as i32))
+                    });
+                    if let Some((class, value)) = found {
+                        from_io = Some((class, value));
+                        break;
+                    }
+                    // Nothing yet: block until the reader posts, bounded by the same slice
+                    // the host loop uses so a shutdown is still observed.
+                    let _ = posting.wait_for_events(HOST_LOOP_SLICE_MS);
+                    if posting.is_shutdown() {
+                        return None;
+                    }
+                }
+            }
+            // **(value, class)** — the class is what a multi-member family is read by.
+            let (value, class, from_clock) = match index {
                 Some(index) => {
-                    let (_, _, value) = staged.remove(index);
-                    (value, false)
+                    let (class, _, value) = staged.remove(index);
+                    (value, class, false)
                 }
                 // The host's own clock, waited out and then answered: the guest is
                 // suspended for the slice, which is what a frame *is*.
-                None if is_frame => (0, true),
+                None if is_frame => (0, park.class, true),
+                None if from_io.is_some() => {
+                    let (class, value) = from_io.unwrap();
+                    (value, class, false)
+                }
                 None => return None,
             };
             if from_clock {
@@ -884,7 +983,7 @@ fn run_on_fiber(
                     &format!("resume [{}] at root iteration={iteration}", park.task),
                 );
             }
-            Some(value)
+            Some((value, class))
         },
     )?;
     match outcome {
