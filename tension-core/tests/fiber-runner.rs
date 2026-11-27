@@ -116,9 +116,13 @@ fn a_fiber_guest_parks_and_resumes_with_the_producers_word() {
     // **Counts.** One park, one completion: the host logs both, and the numbers are
     // what make "parks >= 1, wakes >= 1" a measurement rather than a phrase.
     let parks = stderr.lines().filter(|line| line.contains(" parked on class 4 key 7")).count();
+    // The line names both classes since DL58 — `completing class 4 (parked on 4) key 7
+    // with 500` — because a multi-member family's members are only distinguishable by the
+    // delivered class. Matched on the part that is a fact regardless of the park: the pair
+    // and the producer's word.
     let completions = stderr
         .lines()
-        .filter(|line| line.contains("completing class 4 key 7 with 500"))
+        .filter(|line| line.contains("completing class 4") && line.contains("key 7 with 500"))
         .count();
     assert_eq!(parks, 1, "expected exactly one park:\n{stderr}");
     assert_eq!(completions, 1, "expected exactly one completion:\n{stderr}");
@@ -128,7 +132,7 @@ fn a_fiber_guest_parks_and_resumes_with_the_producers_word() {
     // shape — a completion that arrives before the park is a different mechanism
     // (the sticky buffer) and a different claim.
     let parked = line_at(&stderr, " parked on class 4 key 7").expect("a park line");
-    let completed = line_at(&stderr, "completing class 4 key 7 with 500").expect("a completion line");
+    let completed = line_at(&stderr, "key 7 with 500").expect("a completion line");
     assert!(
         parked < completed,
         "the completion was posted before the park:\n{stderr}"
