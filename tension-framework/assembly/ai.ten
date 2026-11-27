@@ -221,6 +221,27 @@ export class AiConfig {
  *     s.close();
  *   }
  */
+/**
+ * **What a completed stream wait names** (DL57, decision 3).
+ *
+ * The await used to answer an `i32` that meant "unread byte count" for `READY`, `0` for
+ * `DONE` and `-EIO` for `ERROR` — three events flattened into one number the guest then
+ * had to re-derive by asking a second function which class had arrived. The ordinals below
+ * are what the host posts in the completion's payload, so the value the `await` answers
+ * *is* the event.
+ *
+ * The text is read through {@link Session.read}, which drains everything accumulated; a
+ * byte count was never needed for that.
+ */
+export enum AiEvent {
+  /** At least one chunk is waiting; take it with `read()`. */
+  Ready = 0,
+  /** The reply is over, and everything has been read. */
+  Done = 1,
+  /** Generation failed; the backend's reason, if it had one, is in the reply buffer. */
+  Error = 2,
+}
+
 export class Session {
   private sessionHandle: i32;
 
@@ -276,17 +297,25 @@ export class Session {
    * A returned string is always whole UTF-8 codepoints — the host buffers any
    * trailing partial codepoint until a later token completes it.
    */
+  /**
+   * **One chunk: what the event you just awaited announced, and no more** (DL57).
+   *
+   * It used to loop until the buffer was empty, which was right when the count was a
+   * coalesced "everything accumulated" and the loop was how a guest got all of it. With a
+   * chunked stream that loop *is* the defect decision 4 names — it kept asking "is there
+   * more yet" and swallowed every remaining chunk inside one `read()`, so a reply printed
+   * as one blob however finely it was posted. Measured: four posted chunks, one printed
+   * line.
+   *
+   * The contract is now the pairing: await once, read once, print once.
+   */
   read(): string {
-    let text = "";
-    while (true) {
-      const unread = hostSessionRead(this.sessionHandle, 0, 0); // probe: no consume
-      if (unread <= 0) break;
-      const buf = new ArrayBuffer(unread);
-      const got = hostSessionRead(this.sessionHandle, changetype<usize>(buf), unread);
-      if (got <= 0) break;
-      text += String.UTF8.decodeUnsafe(changetype<usize>(buf), got);
-    }
-    return text;
+    const unread = hostSessionRead(this.sessionHandle, 0, 0); // probe: no consume
+    if (unread <= 0) return "";
+    const buf = new ArrayBuffer(unread);
+    const got = hostSessionRead(this.sessionHandle, changetype<usize>(buf), unread);
+    if (got <= 0) return "";
+    return String.UTF8.decodeUnsafe(changetype<usize>(buf), got);
   }
 
   /** `0` idle, `1` generating, `-1` unknown handle. */

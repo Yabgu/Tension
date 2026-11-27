@@ -22,8 +22,9 @@
 // game's own `start` or `deliver`.
 
 import { Task, TaskRecord } from "~lib/task";
+import { AiEvent } from "../ai";
 import { __taskBindFamily, __taskHasRunnable } from "~lib/task-rt";
-import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks, CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_FRAME } from "./wire";
+import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks, CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_FRAME, CLASS_IO_READY, CLASS_IO_EOF } from "./wire";
 import { effectiveRingCapacities } from "./config";
 import { makeCallbacks } from "./callbacks";
 import { regionOffset } from "./arena";
@@ -63,6 +64,12 @@ const FAMILY_RESOURCES: i32 = CLASS_RESOURCE_READY;
  * the one a caller awaits.
  */
 const FAMILY_AI: i32 = CLASS_AI_DONE;
+/**
+ * The input family (DL57). One family for readiness and its end, keyed on `IO_READY`'s id
+ * for the same reason the AI family is keyed on `AI_DONE`'s: the success class is the one a
+ * caller awaits, and the delivered class says which of the two arrived.
+ */
+const FAMILY_IO: i32 = CLASS_IO_READY;
 
 export class rt {
   /**
@@ -78,6 +85,8 @@ export class rt {
     __taskBindFamily(CLASS_AI_READY, FAMILY_AI);
     __taskBindFamily(CLASS_AI_DONE, FAMILY_AI);
     __taskBindFamily(CLASS_AI_ERROR, FAMILY_AI);
+    __taskBindFamily(CLASS_IO_READY, FAMILY_IO);
+    __taskBindFamily(CLASS_IO_EOF, FAMILY_IO);
   }
 
   /** Whether a task is ready to resume — the frame loop's `wait(0)` test (§6.3). */
@@ -168,11 +177,11 @@ export class rt {
    * `_record.class_` / `_record.payload`; callers normally want {@link stream}
    * plus {@link classify}.
    */
-  static streamTask(session: i32): Task<i32> {
+  static streamTask(session: i32): Task<AiEvent> {
     const record = new TaskRecord();
     record.class_ = CLASS_AI_DONE;
     record.key = session;
-    const handle = new Task<i32>();
+    const handle = new Task<AiEvent>();
     handle._record = record;
     return handle;
   }
@@ -184,16 +193,15 @@ export class rt {
    * {@link classify}, which reads the record after the await.
    *
    * ```
-   * const signal: Task<i32> = rt.stream(session);
-   * await signal;
-   * const n: i32 = rt.classify(signal);
+   * const event: AiEvent = await rt.stream(session);
+   * if (event == AiEvent.Ready) { write(session.read()); }
    * ```
    *
    * The handle is exactly `streamTask`'s: the record is stamped with
    * `AI_DONE`'s class (the family's key, mirroring `rt.job`'s use of
    * `JOB_DONE`) and the session handle; the host's delivered class replaces it.
    */
-  static stream(session: i32): Task<i32> {
+  static stream(session: i32): Task<AiEvent> {
     return rt.streamTask(session);
   }
 

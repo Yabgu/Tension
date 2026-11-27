@@ -122,7 +122,7 @@ struct Shared {
 /// critical section for no benefit.
 fn post_if_any(shared: &Shared, post: Option<StreamPost>) {
     if let Some(post) = post {
-        shared.sink.post(post.class(), shared.session, post.payload());
+        shared.sink.post(post.class(), shared.session, post.event());
     }
 }
 

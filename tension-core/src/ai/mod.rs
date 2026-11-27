@@ -102,6 +102,12 @@ use std::sync::Arc;
 use wasmtime::{Caller, Linker};
 
 use crate::session::arena::{CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY};
+
+/// The `AiEvent` ordinals, as the guest's SDK declares them
+/// (`tension-framework/assembly/ai.ten`). **The wire contract, one home per side.**
+pub const AI_EVENT_READY: u32 = 0;
+pub const AI_EVENT_DONE: u32 = 1;
+pub const AI_EVENT_ERROR: u32 = 2;
 use crate::session::posting::PostingSide;
 use crate::HostState;
 
@@ -193,13 +199,23 @@ impl StreamPost {
         }
     }
 
-    /// The payload word: the unread count for READY, 0 for both terminals. The
-    /// **class** says which it is — a zero payload must never be read as either
-    /// done or failure on its own (STEP 7's lesson).
-    pub fn payload(self) -> u32 {
+    /// **The event, not a byte count** (DL57).
+    ///
+    /// The payload word used to carry the unread count for READY and `0` for both terminals,
+    /// which forced every guest to re-derive the event from the delivered class and made
+    /// `0` mean three different things depending on a field it had to look up. The guest's
+    /// `await` now answers an `AiEvent` directly — `Ready`, `Done` or `Error` — and the text
+    /// is read through `session.read()`, which drains everything accumulated and needs no
+    /// count. So `b` names the event and the class (which the record still carries, written
+    /// by `__parkHost`) agrees with it rather than being the only way to know.
+    ///
+    /// The ordinals are the SDK's `AiEvent` (`tension-framework/assembly/ai.ten`); this is
+    /// the other end of that contract.
+    pub fn event(self) -> u32 {
         match self {
-            StreamPost::Ready(unread) => unread as u32,
-            StreamPost::Done | StreamPost::Error => 0,
+            StreamPost::Ready(_) => AI_EVENT_READY,
+            StreamPost::Done => AI_EVENT_DONE,
+            StreamPost::Error => AI_EVENT_ERROR,
         }
     }
 }
@@ -1142,9 +1158,9 @@ mod stream_gate_tests {
     fn the_sink_posts_the_class_the_gate_names() {
         let posting = Arc::new(PostingSide::default());
         let sink = AiSink::new(Arc::clone(&posting));
-        sink.post(StreamPost::Ready(9).class(), 1, StreamPost::Ready(9).payload());
-        sink.post(StreamPost::Done.class(), 1, StreamPost::Done.payload());
-        sink.post(StreamPost::Error.class(), 1, StreamPost::Error.payload());
+        sink.post(StreamPost::Ready(9).class(), 1, StreamPost::Ready(9).event());
+        sink.post(StreamPost::Done.class(), 1, StreamPost::Done.event());
+        sink.post(StreamPost::Error.class(), 1, StreamPost::Error.event());
         for class in [CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR] {
             let records = posting.queue(class).expect("the class exists").drain();
             assert_eq!(records.len(), 1, "class {class} got exactly one record");
@@ -1166,7 +1182,7 @@ mod stream_gate_tests {
 
         for unread in 1..=64usize {
             if let Some(post) = gate.appended(unread) {
-                sink.post(post.class(), 1, post.payload());
+                sink.post(post.class(), 1, post.event());
             }
         }
         let queued = posting.queue(CLASS_AI_READY).expect("class").len();

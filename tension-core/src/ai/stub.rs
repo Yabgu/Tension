@@ -17,6 +17,13 @@ use std::collections::HashMap;
 use crate::ai::{AiAdapter, AiConfig, AiSink, StreamGate, StreamPost};
 use crate::session::arena::CLASS_AI_ERROR;
 
+/// How many pieces the stub splits a reply into (DL57).
+///
+/// **Four, because the acceptance needs three separately-arriving chunks** and a fourth
+/// leaves the count robust to a piece that happens to be empty. A reply shorter than four
+/// characters still yields one piece per character.
+const PIECES: usize = 4;
+
 /// Roles accepted by `session_add` (0 = system, 1 = user, 2 = assistant).
 const ROLE_SYSTEM: i32 = 0;
 const ROLE_USER: i32 = 1;
@@ -36,6 +43,13 @@ struct StubSession {
     /// await path is exercisable with no model and no GGUF — which is what makes
     /// the SDK's stream testable in a container without llama.cpp.
     gate: StreamGate,
+    /// **The reply, as pieces still to append** (DL57). A generation queues them here and
+    /// appends one per drain, so the guest sees separate READY events instead of one burst —
+    /// the shape a model streams in, driven by consumption rather than by a clock so the
+    /// acceptance is deterministic.
+    pieces: Vec<Vec<u8>>,
+    /// Index of the next piece to append.
+    next_piece: usize,
 }
 
 impl StubSession {
@@ -89,7 +103,7 @@ impl StubAdapter {
     /// Post whatever the gate asked for.
     fn post(&self, session: i32, post: Option<StreamPost>) {
         if let Some(post) = post {
-            self.sink.post(post.class(), session, post.payload());
+            self.sink.post(post.class(), session, post.event());
         }
     }
 }
@@ -111,6 +125,8 @@ impl AiAdapter for StubAdapter {
                 pos: 0,
                 generating: false,
                 gate: StreamGate::default(),
+                pieces: Vec::new(),
+                next_piece: 0,
             },
         );
         Ok(handle)
@@ -180,20 +196,27 @@ impl AiAdapter for StubAdapter {
                 posts.push(s.gate.settled(true, unread));
                 (posts, false)
             } else {
-                // Append in pieces so a coalesced burst is real rather than
-                // asserted: the first append posts READY with the running
-                // count, the rest are swallowed until the guest drains.
-                for piece in split_pieces(&text, 4) {
-                    s.reply.extend_from_slice(piece.as_bytes());
-                    let unread = s.reply.len() - s.pos;
-                    posts.push(s.gate.appended(unread));
-                }
-                // Completion appends the assistant turn, exactly as a real
-                // model does, and settles the stream.
+                // **One piece per drain** (DL57). The reply is split and queued; the first
+                // piece is appended here, and `read_consume` appends the next each time the
+                // guest empties the buffer. So each chunk is its own READY, its own wake and
+                // its own print — which is the property the acceptance measures — and the
+                // sequence is the same on every run, which a clock-driven producer could not
+                // promise.
+                //
+                // (A real model appends on its own thread, bounded by the ring. The
+                // guest-visible event sequence is identical, and the 0.6.0b coalescing rule
+                // is unchanged: at most one READY outstanding per session.)
+                s.pieces = split_pieces(&text, PIECES).into_iter().map(|p| p.as_bytes().to_vec()).collect();
+                s.next_piece = 0;
+                s.reply.clear();
+                s.pos = 0;
                 s.history.push((ROLE_ASSISTANT, text));
-                s.generating = false;
+                if let Some(first) = s.pieces.first().cloned() {
+                    s.reply.extend_from_slice(&first);
+                    s.next_piece = 1;
+                }
                 let unread = s.reply.len() - s.pos;
-                posts.push(s.gate.settled(false, unread));
+                posts.push(s.gate.appended(unread));
                 (posts, false)
             }
         };
@@ -225,8 +248,31 @@ impl AiAdapter for StubAdapter {
             let n = s.unread().min(cap.max(0) as usize);
             let out = s.reply[s.pos..s.pos + n].to_vec();
             s.pos += n;
-            // The drain re-arms the stream and releases a deferred terminal.
-            (out, s.gate.drained(s.unread()))
+            if s.unread() == 0 && s.next_piece < s.pieces.len() {
+                // **The next chunk, once the guest has taken the last one.** Appending while
+                // bytes are unread would coalesce into the outstanding READY and the guest
+                // would see one chunk, not several.
+                let next = s.pieces[s.next_piece].clone();
+                s.next_piece += 1;
+                s.reply.extend_from_slice(&next);
+                // **Clear the outstanding READY before posting the next one.** The
+                // coalescing rule suppresses an append while `signaled` is set, and it is
+                // set until a drain *reports* one — which is this call. Without this the
+                // second chunk was appended, never announced, and the guest parked on a
+                // stream that had already said everything it would say. Measured: one
+                // printed chunk, then a hang.
+                let _ = s.gate.drained(0);
+                let unread = s.unread();
+                (out, s.gate.appended(unread))
+            } else if s.unread() == 0 {
+                // Everything appended and everything read: the terminal.
+                let unread = s.unread();
+                s.generating = false;
+                (out, s.gate.settled(false, unread))
+            } else {
+                // The drain re-arms the stream and releases a deferred terminal.
+                (out, s.gate.drained(s.unread()))
+            }
         };
         self.post(session, post);
         Some(out)
