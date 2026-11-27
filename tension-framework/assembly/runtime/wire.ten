@@ -186,15 +186,16 @@ export struct ArenaControl {
 }
 
 /**
- * What the session reports about the arena it opened (`SessionInfo`, 144 B).
+ * What the session reports about the arena it opened (`SessionInfo`, 160 B).
  *
- * The shape is `tension-core/src/session/arena.rs:51-101`: thirteen classes, so
- * thirteen capacities at 48..100, padded to 104, then the nonce at 104..112 and
- * four reserved words to 144. The 100..104 word is **implicit** — the compiler
- * aligns the `u64` nonce to 104, and the host's `SESSION_INFO_OPEN_NONCE` is 104
- * for the same reason (its `put_u64` refuses an unaligned offset). No field is
- * declared for it; `manifestProblem()` compares this record's `sizeof` against
- * the host's published entry, which is the check that survives.
+ * The shape is `tension-core/src/session/arena.rs`: **fifteen** classes (DL57 added
+ * `IO_READY` and `IO_EOF`), so fifteen capacities at 48..108, padded to 112, then the nonce
+ * at 112..120 and the reserved words to 160. The 108..112 word is **implicit** — the
+ * compiler aligns the `u64` nonce to 112, and the host's `SESSION_INFO_OPEN_NONCE` is 112
+ * for the same reason (its `put_u64` refuses an unaligned offset). No field is declared for
+ * it; `manifestProblem()` compares this record's `sizeof` against the host's published
+ * entry, which is the check that survives — and it is what caught this struct still
+ * declaring thirteen.
  */
 @unmanaged
 export struct SessionInfo {
@@ -213,7 +214,7 @@ export struct SessionInfo {
   layoutHash: u32 = 0;
   regionCount: u32 = 0;
   classCount: u32 = 0;
-  /** Thirteen capacities, in class-id order (48 .. 100). */
+  /** Fifteen capacities, in class-id order (48 .. 108). */
   capacity0: u32 = 0;
   capacity1: u32 = 0;
   capacity2: u32 = 0;
@@ -227,15 +228,20 @@ export struct SessionInfo {
   capacity10: u32 = 0;
   capacity11: u32 = 0;
   capacity12: u32 = 0;
-  /// 100 .. 104 is the `u64` nonce's alignment word (`arena.rs:96-99`). It is
+  capacity13: u32 = 0;
+  capacity14: u32 = 0;
+  /// 108 .. 112 is the `u64` nonce's alignment word (`arena.rs`). It is
   /// implicit: the compiler aligns `openNonce` to 104, so no field is declared
   /// for it — the assertion below is what pins the boundary.
   openNonce: u64 = 0;
-  // 112 .. 144: reserved. Four words: the record is 144 bytes.
+  // 120 .. 160: reserved. Five words: the record is 160 bytes (DL57 moved it from 144
+  // when the fifteen capacities took the array eight bytes further and the nonce's
+  // alignment pushed everything a word on).
   reserved0: u64 = 0;
   reserved1: u64 = 0;
   reserved2: u64 = 0;
   reserved3: u64 = 0;
+  reserved4: u64 = 0;
 }
 
 /**
