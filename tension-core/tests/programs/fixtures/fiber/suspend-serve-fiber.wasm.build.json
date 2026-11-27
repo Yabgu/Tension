@@ -1,5 +1,5 @@
 {
-  "compiler": "77d812321f4d325782375097f43bdfbb993362159e5f69f428eebdd4b6e64e0a",
+  "compiler": "8576743cf3c329c92e47c131449a283e552031f3c4c882c0c826d395326e11ec",
   "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "thread/suspend-serve.ten",
   "flags": [

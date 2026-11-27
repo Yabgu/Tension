@@ -1,5 +1,5 @@
 {
-  "compiler": "f97c0f03b334b1e8e318c39dc60857a405ceee076b3085f7d2c9498201d3e6dd",
+  "compiler": "8576743cf3c329c92e47c131449a283e552031f3c4c882c0c826d395326e11ec",
   "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "thread/spawn-entry-async.ten",
   "flags": [
@@ -15,9 +15,14 @@
     "256",
     "--enable",
     "threads",
+    "--stackful-backend",
+    "continuation",
     "--optimizeLevel",
     "0",
     "--stackful-backend",
     "fiber"
-  ]
+  ],
+  "readSet": {
+    "std": "208d249d8b73296143cee71d17b9b9bc4bda25d39ef300c0879aef8e84519c49"
+  }
 }

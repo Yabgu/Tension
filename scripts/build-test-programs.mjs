@@ -316,6 +316,14 @@ const PROGRAMS = {
   "spawn-entry-async-fiber": FIBER_FLAGS,
   // DL41: a served body that parks, on the fiber backend.
   "suspend-serve-fiber": FIBER_FLAGS,
+  // DL60, I140: a **sync** entry submitting to an async non-entry function. The first
+  // fiber program whose `$serveEntry` has no table behind it, which is the exact shape
+  // that used to fail validation. **Not `FIBER_FLAGS`**: with `--sharedMemory` the
+  // build never reaches `__serveCont` and the program compiles either way (measured on
+  // the pre-fix compiler), so it would be a fixture that cannot go red. These are the
+  // plain fiber flags — the same ones `async-on-main-fiber` uses — where the claim is about
+  // this backend, and a promise build would prove nothing about it.
+  "serve-entry-sync-root": ASYNC_ON_MAIN_FIBER_FLAGS,
   "rt-guards": PROMISE_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,
