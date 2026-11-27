@@ -122,12 +122,21 @@ input_sources 1
 build:examples 22 of 22, exit 0
 ```
 
-**CI:** TensionScript **16/16** (`46059097144`). Tension **green** (`46060503417`), whose
-Stackful proofs job ran **six** binaries — park_frame 2, fiber 6, fiber-executor 7,
-fiber-runner 5, input_sources 1, async_on_main 2. Two earlier TensionScript runs were red and
-are not hidden: `46041583361` and `46043896716` were DL56's; `46055759166` was
-`stackful-fiber-record [fixture mismatch]` from the new `completionClass` import, fixed by
-regenerating that one golden (`cfcd05d5`) — not by re-running.
+**CI:** TensionScript **16/16** (`46059097144`). Tension **green at `f65c088`**
+(`46061549748`), and at `9f91dac` (`46060503417`), whose Stackful proofs job ran **six**
+binaries — park_frame 2, fiber 6, fiber-executor 7, fiber-runner 5, input_sources 1,
+async_on_main 2.
+
+**Red runs, all named — none re-run to green:**
+
+- `46041583361`, `46043896716` — DL56's, quoted in that round's report.
+- `46055759166` — `stackful-fiber-record [fixture mismatch]`, from the new
+  `completionClass` import. One golden regenerated (`cfcd05d5`).
+- **`46061041010` — my own regression.** `e9383e1` reformatted the resume line to name the
+  delivered class, and `fiber-runner`'s two substring matchers still expected the old
+  phrasing, so "expected exactly one completion" failed on a run that was correct. I had run
+  the suites *before* that commit. Fixed in `f65c088` by keying the matchers on the pair and
+  the producer's word rather than the line's phrasing.
 
 ## 5. Phase 4 — what the round owed
 
