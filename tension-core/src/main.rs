@@ -76,6 +76,7 @@ use wasmtime::{Caller, Config, ExternType, Memory, Module, Store};
 mod adapter;
 mod ai;
 mod audio;
+mod ready;
 mod scheduler;
 mod debug;
 mod dwarf;
@@ -151,6 +152,10 @@ pub(crate) struct HostState {
     pub(crate) file_eofs: std::collections::HashMap<i32, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Sources already armed, so arming twice does not spawn a second reader.
     pub(crate) file_armed: std::collections::HashSet<i32>,
+    /// **The host's ready queue and the policy over it** (DL59, I95). A spawned task on the
+    /// fiber backend hands its slot here (`scheduler::ready`) and the host resumes it; the
+    /// order is the [`ready::ReadyPolicy`]'s decision and nothing else's.
+    pub(crate) ready: crate::ready::ReadyQueue,
     /// The mount table: `--res` paks (flat) followed by whatever a guest
     /// mounted, in load order. Each owns its bytes (1x memory) and the guest's
     /// fd space indexes it, so an fd's high bits are a mount index whichever
@@ -430,6 +435,7 @@ impl HostState {
             file_queues: Default::default(),
             file_eofs: Default::default(),
             file_armed: Default::default(),
+            ready: crate::ready::ReadyQueue::default(),
             res: std::sync::Arc::clone(&config.res),
             write_root: config.write_root.clone(),
             write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
@@ -810,6 +816,55 @@ fn thread_boot(
         &format!("main booted: __threadInit({CAPACITY}), arena {base}+{size}, __start answered {started}"),
     );
     Ok(())
+}
+
+/// **Drains the ready queue through the guest's own `__driveSlot`** (DL59, I95).
+///
+/// One call per task, in the order the queue's policy chose, until the queue is empty. A
+/// task that makes itself ready again (parks, is re-submitted by a producer) is served in a
+/// later pass, which is what keeps this a drain rather than a re-entrant loop over a
+/// mutating queue.
+///
+/// Absent export is not an error: a continuation guest drives its own ring and never fills
+/// this queue, and a guest with nothing spawned has nothing to drain.
+fn drain_ready(store: &mut Store<HostState>, instance: &wasmtime::Instance) -> anyhow::Result<()> {
+    let Ok(drive) = instance.get_typed_func::<i32, ()>(&mut *store, "__driveSlot") else {
+        return Ok(());
+    };
+    let mut served: u64 = 0;
+    while let Some(slot) = store.data_mut().ready.next() {
+        served += 1;
+        if tracing() {
+            logging::log(
+                Level::Info,
+                "ready",
+                &format!("drive slot {slot} (#{served}, policy {})", store.data().ready.policy_name()),
+            );
+        }
+        // A trap inside a spawned body is the guest's failure, not the host's: surfaced
+        // with the slot named so the transcript says which task died.
+        drive.call(&mut *store, slot as i32).map_err(|error| {
+            anyhow::anyhow!("a spawned task at slot {slot} trapped: {error}")
+        })?;
+    }
+    if served > 0 && tracing() {
+        logging::log(
+            Level::Info,
+            "ready",
+            &format!(
+                "drained {served} task(s) by policy {}, refused_full={}",
+                store.data().ready.policy_name(),
+                store.data().ready.refused_full()
+            ),
+        );
+    }
+    Ok(())
+}
+
+/// Whether the operator asked for the per-task trace (`TENSION_ITERATIONS`, the same switch
+/// DL56 put on the host loop and the scheduler).
+fn tracing() -> bool {
+    std::env::var_os("TENSION_ITERATIONS").is_some()
 }
 
 /// **Runs a guest entry on a fiber** when the artifact asked for the fiber backend,
@@ -2922,6 +2977,19 @@ fn main() -> anyhow::Result<()> {
             "game.wasm did not export `_start_game` or `_start`",
         ))
     };
+
+    // ── the ready drain (DL59, I95) ──────────────────────────────────────
+    //
+    // **The invocation point, named**: this is the first thing after the guest's entry
+    // returns, before the workers are joined and before any exit path. A plain fiber guest
+    // has no `host_loop` (that needs `__taskWake` + `_game_running`), so without this a
+    // spawned task's slot would sit in the host queue until the process ended — which is
+    // exactly the defect: three spawned tasks, zero bodies, `order 0`, exit 0.
+    //
+    // `drain_ready` pops through the queue's policy and resumes each slot through the
+    // guest's own `__driveSlot` export, one call per task. It is not a loop in the guest:
+    // the guest runs exactly the task it is handed.
+    drain_ready(&mut store, &instance)?;
 
     // The worker threads a shared-memory guest started. Joined here — on both
     // paths, before the adapters — because a worker outlives the `__startThread`

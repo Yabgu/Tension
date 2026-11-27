@@ -549,6 +549,24 @@ pub fn link_scheduler(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             tension_core::fiber::completion_value()
         },
     )?;
+    // **The spawned task's hand-over** (DL59, I95). A fiber guest cannot run a spawned
+    // body itself — the stack is a host object — so it hands the slot here and the host's
+    // ready queue decides when it runs. The answer is the queue's own: `1` accepted, `0`
+    // full, which the guest turns into a refused spawn rather than a lost wake.
+    linker.func_wrap(
+        "scheduler",
+        "ready",
+        |mut caller: Caller<'_, HostState>, slot: i32| -> i32 {
+            if slot < 0 {
+                return 0;
+            }
+            if caller.data_mut().ready.submit(slot as u32) {
+                1
+            } else {
+                0
+            }
+        },
+    )?;
     // **The class the wake arrived as** (DL57), the second half of the same answer.
     //
     // `completion` carries the payload, which is enough for a one-meaning class (a frame's

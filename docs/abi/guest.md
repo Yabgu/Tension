@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-98 imports across 13 modules: 66 registered by the host in 10 modules, 32 by 3 capability adapters.
+99 imports across 13 modules: 67 registered by the host in 10 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -60,7 +60,8 @@ says how in its own shim; the shared codes are in
 |---|---|---|
 | `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1649`, `tension-core/src/scheduler.rs:527` |
 | `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:545` |
-| `completionClass` | `(i64) → i32` | `tension-core/src/thread.rs:1605`, `tension-core/src/scheduler.rs:559` |
+| `ready` | `(i32) → i32` | `tension-core/src/scheduler.rs:556` |
+| `completionClass` | `(i64) → i32` | `tension-core/src/thread.rs:1605`, `tension-core/src/scheduler.rs:577` |
 
 ## `session`
 

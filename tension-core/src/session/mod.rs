@@ -1898,6 +1898,7 @@ mod lifecycle {
             file_queues: Default::default(),
             file_eofs: Default::default(),
             file_armed: Default::default(),
+            ready: crate::ready::ReadyQueue::default(),
                 res: std::sync::Arc::new(std::sync::Mutex::new(
                     crate::res::MountTable::new(),
                 )),
@@ -2353,6 +2354,7 @@ mod verbs {
             file_queues: Default::default(),
             file_eofs: Default::default(),
             file_armed: Default::default(),
+            ready: crate::ready::ReadyQueue::default(),
                 res: std::sync::Arc::new(std::sync::Mutex::new(
                     crate::res::MountTable::new(),
                 )),
