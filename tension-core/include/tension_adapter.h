@@ -598,8 +598,19 @@ typedef struct tension_pad_record {
  * An adapter sets `.layout_hash = TENSION_ADAPTER_LAYOUT_HASH` in its vtable.
  * If the host's value disagrees, the load is refused by name rather than the
  * process corrupting later.
+ *
+ * **This constant must move with `arena::layout_hash()`**, and DL57's input classes are the
+ * case that shows why the guard earns its keep: `CLASS_COUNT` 13 -> 15 moved the hash, the
+ * adapter was not rebuilt, and every OGRE example was refused by name with both values —
+ * instead of reading an arena whose region table had shifted under it. Bumping the number
+ * without rebuilding the adapter would be worse than either: it would assert a shape the
+ * binary does not read. The rebuild is what makes the new number true.
+ *
+ * (`arena::layout_hash()`'s own unit test pins the value on the Rust side; this is its C
+ * twin, and the two are checked against each other at load, which is the only reason they
+ * can safely be written twice.)
  */
-#define TENSION_ADAPTER_LAYOUT_HASH 786288195u
+#define TENSION_ADAPTER_LAYOUT_HASH 3289783349u
 
 /** The most scalar parameters a registered import may take. */
 #define TENSION_ADAPTER_MAX_PARAMS 8u
