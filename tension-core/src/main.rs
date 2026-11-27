@@ -3222,7 +3222,19 @@ fn host_loop(
     wake: &wasmtime::TypedFunc<(i32, i32), ()>,
     fail: Option<&wasmtime::TypedFunc<(i32, i32, i32), ()>>,
 ) -> anyhow::Result<()> {
+    // **The loop's own count, for measuring where a resume happens relative to the post
+    // that caused it** (DL55). A guest asking "does my await park, or does the body run a
+    // tick late" cannot answer from its own clock: it is suspended while parked, so it sees
+    // no time pass either way. Only the host knows how many passes its loop made, so the
+    // count lives here and is printed when `TENSION_ITERATIONS` is set. Off by default and
+    // one branch per pass when on, so an ordinary run's transcript and cost are unchanged.
+    let trace_iterations = std::env::var_os("TENSION_ITERATIONS").is_some();
+    let mut iteration: u64 = 0;
     loop {
+        iteration += 1;
+        if trace_iterations {
+            logging::log(Level::Info, "iter", &format!("iteration={iteration}"));
+        }
         // Exit condition, in the order that cannot lose the last completion:
         // the guest's say-so first, then whether anything is still outstanding.
         let running = match store.data().game_running.clone() {
@@ -3306,6 +3318,9 @@ fn host_loop(
         // table read, and a guest that has stopped being driven leaves through
         // the exit condition below.
         if let Some(frame_task) = store.data_mut().scheduler.take_frame() {
+            if trace_iterations {
+                logging::log(Level::Info, "iter", &format!("post frame to task {frame_task} at iteration={iteration}"));
+            }
             store.data_mut().wake_batch.push(scheduler::Wake {
                 task_id: frame_task,
                 class: session::arena::CLASS_FRAME,
@@ -3391,6 +3406,10 @@ fn host_loop(
                         let pat = HOST_RESUME_PAYLOADS + index * 4;
                         data[pat..pat + 4].copy_from_slice(&wake.payload.to_le_bytes());
                     }
+                }
+                if trace_iterations {
+                    let ids: Vec<u64> = chunk.iter().map(|w| w.task_id).collect();
+                    logging::log(Level::Info, "iter", &format!("resume {ids:?} at iteration={iteration}"));
                 }
                 resume.call(
                     &mut *store,
