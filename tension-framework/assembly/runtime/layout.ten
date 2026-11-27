@@ -13,7 +13,7 @@
 // `--noExportMemory` is forbidden (F2) and `--lowMemoryLimit` likewise.
 
 export const ABI_VERSION: u32 = 1;
-export const LAYOUT_HASH: u32 = 3289783349;
+export const LAYOUT_HASH: u32 = 4177755725;
 /** The live arena this guest asks for (bytes). */
 export const ARENA_SIZE: u32 = 6250528;
 /** The ceiling, and therefore the guest's `--memoryBase`. */

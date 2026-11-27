@@ -306,6 +306,17 @@ fn two_parked_tasks_on_two_threads_both_complete() {
                     },
                 )
                 .expect("scheduler::completion");
+            // **The class the wake arrived as** (DL57). A separate import so an artifact
+            // that predates it does not reference it; this guest is built now, so it does.
+            linker
+                .func_wrap(
+                    "scheduler",
+                    "completionClass",
+                    |_caller: wasmtime::Caller<'_, ()>, _task_id: i64| -> i32 {
+                        fiber::completion_class()
+                    },
+                )
+                .expect("scheduler::completionClass");
             let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
             let log_for_print = std::sync::Arc::clone(&log);
             let memory = wasmtime::SharedMemory::new(&engine, wasmtime::MemoryType::shared(2, 256))
@@ -381,7 +392,11 @@ fn two_parked_tasks_on_two_threads_both_complete() {
                     // suspended, so neither can be holding the other's completion —
                     // this is two live parked tasks, not two sequential ones.
                     barrier_for_park.wait();
-                    Some(value)
+                    // `(value, class)` since DL57: the producer answers the class the wake
+                    // arrives as, because a multi-member family (`AI_READY`/`DONE`/`ERROR`)
+                    // is read by the class rather than the payload. This guest's park is
+                    // the JOB family's, so the delivered class is the one it asked for.
+                    Some((value, park.class))
                 },
             )
             .expect("the executor runs");

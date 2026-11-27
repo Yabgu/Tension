@@ -115,7 +115,11 @@ pub struct WorkerState {
     /// store's task table is the guest's own (16 slots in every program here). A
     /// later delivery for the same id replaces the word, because the task that
     /// consumed the first one has already resumed.
-    delivered: Mutex<Vec<(u64, i32)>>,
+    /// `(task id, payload, class)` per delivery this store has applied (DL57 appended the
+    /// class). The class is what a multi-member family is read by — `rt.classify` dispatches
+    /// on it — and `scheduler::completionClass` answers it here exactly as main's answers it
+    /// from the fiber thread-local.
+    delivered: Mutex<Vec<(u64, i32, i32)>>,
     /// Wakes this store has served by resuming a suspended park (DL41). Header word
     /// 6 is what the guest reads; the session loop keeps its own count in
     /// `service_wakes`, and the two never apply the same delivery.
@@ -1594,6 +1598,28 @@ impl ExecutorPool {
         // and the loop is the only thing that resumes a task in this store, so the
         // map it fills is the store's own record of what it was told. Nothing is
         // invented and no channel is added: the value already crossed.
+        // **The class rides with the word** (DL57), the same pair main's `scheduler`
+        // answers. A worker that resumes a served body reads `rt.classify`'s result the
+        // same way a plain guest does, so the field has to be filled here too — and the
+        // import has to exist, or the worker does not instantiate at all.
+        linker.func_wrap(
+            "scheduler",
+            "completionClass",
+            |caller: Caller<'_, WorkerState>, _task_id: i64| -> i32 {
+                if crate::fiber::running() {
+                    return crate::fiber::completion_class();
+                }
+                caller
+                    .data()
+                    .delivered
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .iter()
+                    .find(|(id, _, _)| *id == _task_id as u64)
+                    .map(|(_, _, class)| *class)
+                    .unwrap_or(-1)
+            },
+        )?;
         linker.func_wrap(
             "scheduler",
             "completion",
@@ -1615,8 +1641,8 @@ impl ExecutorPool {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 words
                     .iter()
-                    .find(|(id, _)| *id == task_id as u64)
-                    .map(|(_, payload)| *payload)
+                    .find(|(id, _, _)| *id == task_id as u64)
+                    .map(|(_, payload, _)| *payload)
                     .unwrap_or(0)
             },
         )?;
@@ -2344,9 +2370,12 @@ fn service_wakes(
                     .delivered
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                match words.iter_mut().find(|(id, _)| *id == delivery.task_id) {
-                    Some(slot) => slot.1 = delivery.payload,
-                    None => words.push((delivery.task_id, delivery.payload)),
+                match words.iter_mut().find(|(id, _, _)| *id == delivery.task_id) {
+                    Some(slot) => {
+                        slot.1 = delivery.payload;
+                        slot.2 = delivery.class as i32;
+                    }
+                    None => words.push((delivery.task_id, delivery.payload, delivery.class as i32)),
                 }
             }
             let before_call = std::time::Instant::now();
@@ -2522,8 +2551,9 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
         anyhow::anyhow!(
             "the module did not instantiate as a worker — the worker's import set is \
              env::memory, env::abort, env::__executorCount, env::__startThread, \
-             scheduler::park and tension::io, and a capability import has no answer on a \
-             worker thread: {error}"
+             scheduler::park, scheduler::completion, scheduler::completionClass and \
+             tension::io, and a capability import has no answer on a worker \
+             thread: {error}"
         )
     })?;
 

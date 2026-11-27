@@ -29,10 +29,10 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:1549`, `tension-core/src/host/io.rs:51` |
+| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:1553`, `tension-core/src/host/io.rs:51` |
 | `emit` | `(i32, i32)` | `tension-core/src/host/io.rs:96` |
-| `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:1504` |
-| `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:1515` |
+| `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:1508` |
+| `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:1519` |
 
 ## `ogre` — capability
 
@@ -58,9 +58,9 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:527` |
-| `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1597`, `tension-core/src/scheduler.rs:545` |
-| `completionClass` | `(i64) → i32` | `tension-core/src/scheduler.rs:559` |
+| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1649`, `tension-core/src/scheduler.rs:527` |
+| `completion` | `(i64) → i32` | `tension-core/src/thread.rs:1623`, `tension-core/src/scheduler.rs:545` |
+| `completionClass` | `(i64) → i32` | `tension-core/src/thread.rs:1605`, `tension-core/src/scheduler.rs:559` |
 
 ## `session`
 
@@ -143,14 +143,14 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/thread.rs:2737`, `tension-core/src/host/io.rs:66` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:2752`, `tension-core/src/host/io.rs:116` |
+| `print` | `(i32, i32)` | `tension-core/src/thread.rs:2767`, `tension-core/src/host/io.rs:66` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:2782`, `tension-core/src/host/io.rs:116` |
 | `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:131` |
 | `input_arm` | `(i32) → i32` | `tension-core/src/host/io.rs:164` |
 | `input_read` | `(i32, i32, i32) → i32` | `tension-core/src/host/io.rs:281` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:2780`, `tension-core/src/host/io.rs:322` |
-| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:2776`, `tension-core/src/host/io.rs:415` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:2777`, `tension-core/src/host/io.rs:421` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:2810`, `tension-core/src/host/io.rs:322` |
+| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:2806`, `tension-core/src/host/io.rs:415` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:2807`, `tension-core/src/host/io.rs:421` |
 
 ## `tension::platform`
 

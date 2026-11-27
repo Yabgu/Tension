@@ -53,7 +53,7 @@ pub const ABI_VERSION: u16 = 1;
 pub const CONTROL_OFFSET: usize = 0x000;
 pub const CONTROL_SIZE: usize = 256;
 pub const SESSION_INFO_OFFSET: usize = 0x100;
-pub const SESSION_INFO_SIZE: usize = 144;
+pub const SESSION_INFO_SIZE: usize = 160;
 pub const REGION_TABLE_OFFSET: usize = 0x200;
 pub const REGION_DESC_SIZE: usize = 24;
 pub const REGION_COUNT: usize = 12;
@@ -100,7 +100,7 @@ pub const SESSION_INFO_CLASS_CAPACITY: usize = 48;
 /// **refuses** an offset that is not 8-byte aligned (`arena.rs:511-521`), so
 /// this rounds the array's 13 x 4 = 52 bytes up to the next 8-byte boundary:
 /// 48 + 52 = 100, padded to 104.
-pub const SESSION_INFO_OPEN_NONCE: usize = 104;
+pub const SESSION_INFO_OPEN_NONCE: usize = 112;
 
 // ── the session state machine's values (the control block's report) ───────
 
@@ -1327,7 +1327,7 @@ mod tests {
         assert_eq!(CONTROL_OFFSET, 0x000);
         assert_eq!(CONTROL_SIZE, 256);
         assert_eq!(SESSION_INFO_OFFSET, 0x100);
-        assert_eq!(SESSION_INFO_SIZE, 144);
+        assert_eq!(SESSION_INFO_SIZE, 160);
         assert_eq!(REGION_TABLE_OFFSET, 0x200);
         assert_eq!(REGION_DESC_SIZE, 24);
         assert_eq!(MANIFEST_ENTRY_SIZE, 8);
@@ -1377,19 +1377,19 @@ mod tests {
         assert_eq!(SESSION_INFO_REGION_COUNT, 40);
         assert_eq!(SESSION_INFO_CLASS_COUNT, 44);
         assert_eq!(SESSION_INFO_CLASS_CAPACITY, 48);
-        assert_eq!(SESSION_INFO_OPEN_NONCE, 104);
-        // 0.6.0a's bump, stated as arithmetic. The class-capacity array covers
-        // 13 x 4 = 52 bytes (48..100); the nonce is a u64, so the offset rounds
-        // up from 100 to 104 — `put_u64` refuses anything else. Then the nonce's
-        // eight words must be 8-aligned, and the whole record pads to 16:
-        // 104 + 8 = 112, reserved to 144.
-        assert_eq!(SESSION_INFO_CLASS_CAPACITY + CLASS_COUNT * 4, 100);
+        assert_eq!(SESSION_INFO_OPEN_NONCE, 112);
+        // Stated as arithmetic, and it moved in DL57. The class-capacity array covers
+        // CLASS_COUNT x 4 bytes: 13 classes were 52 (48..100), and the input pair took it
+        // to 15 x 4 = 60 (48..108). The nonce is a u64, so the offset rounds up from 108 to
+        // 112 — `put_u64` refuses anything else — and the whole record pads to 16:
+        // 112 + 8 = 120, plus the nonce's four words is 152, reserved to 160.
+        assert_eq!(SESSION_INFO_CLASS_CAPACITY + CLASS_COUNT * 4, 108);
         assert_eq!(SESSION_INFO_OPEN_NONCE % 8, 0, "the u64 nonce is 8-aligned");
-        assert_eq!(SESSION_INFO_OPEN_NONCE + 8 + 8 * 4, SESSION_INFO_SIZE);
+        assert_eq!(SESSION_INFO_OPEN_NONCE + 8 + 8 * 4, 152);
         assert_eq!(SESSION_INFO_SIZE % 16, 0, "SessionInfo pads to 16, like every region");
         // The record ends at 0x100 + 0x90 = 0x190, still inside the header page:
         // no region moves, which is the whole point of appending the classes.
-        assert_eq!(SESSION_INFO_SIZE, 144);
+        assert_eq!(SESSION_INFO_SIZE, 160);
         assert!(SESSION_INFO_OFFSET + SESSION_INFO_SIZE <= REGION_TABLE_OFFSET);
     }
 
@@ -1703,11 +1703,15 @@ mod tests {
     /// `3_451_714_980` was the value before 0.6.0a appended the AI classes:
     /// `CLASS_COUNT` (10 -> 13) and `SESSION_INFO_SIZE` (128 -> 144) are both
     /// folded in, so the bump moves the hash by design.
-    /// `3_289_783_349` is DL57's, from appending the two input classes
-    /// (`CLASS_COUNT` 13 -> 15): a line arriving from the reader thread is a
-    /// completion, not a blocking call, and a guest built for 13 classes must not
-    /// talk to a host that has 15.
-    const RECORDED_LAYOUT_HASH: u32 = 3_289_783_349;
+    /// `3_289_783_349` was DL57's first value, from appending the two input classes
+    /// (`CLASS_COUNT` 13 -> 15): a line arriving from the reader thread is a completion,
+    /// not a blocking call, and a guest built for 13 classes must not talk to a host that
+    /// has 15. `4_177_755_725` is DL57's **second**, and it is the one that shows the first
+    /// was incomplete: 15 class capacities do not fit the window 13 left
+    /// (`SESSION_INFO_CLASS_CAPACITY + 13 * 4 == 100`), so `SESSION_INFO_SIZE` moves
+    /// 144 -> 160 and `SESSION_INFO_OPEN_NONCE` 104 -> 112. A class count that outgrows its
+    /// record is exactly what folding `SESSION_INFO_SIZE` into the hash is for.
+    const RECORDED_LAYOUT_HASH: u32 = 4_177_755_725;
 
     #[test]
     fn canary_lattice_verifies_and_detects_one_byte() {
@@ -1779,13 +1783,13 @@ mod tests {
         assert!(used <= EVENT_TABLE_SIZE as u64);
         assert_eq!(
             EVENT_TABLE_SIZE as u64 - used,
-            59_456,
-            "the defaults leave 59 456 bytes of EVENT_TABLE unused (the AI \
-             family's three classes cost 3 x (32 + 16 x 32) = 1632)"
+            58_752,
+            "the defaults leave 58 752 bytes of EVENT_TABLE unused: 59 456 before DL57's \
+             input pair, which cost (32 + 16 x 32) + (32 + 4 x 32) = 704"
         );
         assert_eq!(
             DEFAULT_RING_CAPACITIES.iter().map(|c| *c as u64).sum::<u64>(),
-            10_417
+            10_417 + 16 + 4
         );
     }
 

@@ -24,6 +24,6 @@ export const MANIFEST_TYPE_IDS: u32[] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 /** This guest's name for each id, for the drift diagnostic. */
 export const MANIFEST_TYPE_NAMES: string[] = ["ArenaControl", "SessionInfo", "RegionDesc", "ManifestEntry", "TableHeader", "StringHalf", "Callbacks", "Subscription", "EventRecord"];
 /** The host's size for each id, in bytes — the claim the guest checks. */
-export const MANIFEST_TYPE_SIZES: u32[] = [256, 144, 24, 8, 32, 16, 64, 16, 32];
+export const MANIFEST_TYPE_SIZES: u32[] = [256, 160, 24, 8, 32, 16, 64, 16, 32];
 /** The host's alignment for each id — a manifest consistency input only. */
 export const MANIFEST_TYPE_ALIGNS: u32[] = [8, 8, 4, 2, 8, 4, 4, 4, 4];

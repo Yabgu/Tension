@@ -377,7 +377,11 @@ mod tests {
         assert_eq!(s.add(999, 1, "unknown handle"), -1);
 
         assert_eq!(s.generate(h), 0);
-        assert_eq!(s.state(h), 0, "the stub completes inside generate");
+        // **It stays generating until the reply is drained** (DL57). The stub used to append
+        // the whole reply inside `generate`; it now queues pieces and appends one per drain,
+        // so the guest sees separate chunks. The generation is therefore live until the last
+        // piece has been read — which is the state a real model is in for the same reason.
+        assert_eq!(s.state(h), 1, "a chunked reply is still in flight after generate");
 
         // Probe is idempotent and non-consuming.
         let n = s.read_probe(h);

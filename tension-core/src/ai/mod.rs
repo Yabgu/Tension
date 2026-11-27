@@ -1288,13 +1288,28 @@ mod stream_gate_tests {
     }
 
     #[test]
-    fn the_payload_never_encodes_the_outcome() {
-        // Class decides; payload is data or 0. A zero-length READY cannot occur
-        // because `appended` refuses unread == 0, so 0 unambiguously means a
-        // terminal once the class is known.
-        assert_eq!(StreamPost::Ready(12).payload(), 12);
-        assert_eq!(StreamPost::Done.payload(), 0);
-        assert_eq!(StreamPost::Error.payload(), 0);
-        assert_ne!(StreamPost::Done.class(), StreamPost::Error.class());
+    fn the_payload_names_the_event_and_the_class_agrees() {
+        // **The contract DL57 replaced the old one with.** The payload used to be the unread
+        // byte count for READY and `0` for both terminals, so a guest had to fetch the class
+        // separately and re-derive what happened — and `0` meant three different things
+        // depending on a field it had to look up.
+        //
+        // Now the payload *is* the event, and the class the same post carries names the same
+        // event. The two cannot disagree without this test failing, which is the whole point:
+        // `rt.classify` used to be the only reader of the class, and a resumed chunk carried
+        // the handle's creation-time stamp instead of the delivered one (measured: every
+        // chunk of a reply read as `AI_DONE`).
+        for post in [StreamPost::Ready(12), StreamPost::Done, StreamPost::Error] {
+            let event = post.event();
+            let class = post.class();
+            let expected = match post {
+                StreamPost::Ready(_) => (crate::ai::AI_EVENT_READY, CLASS_AI_READY),
+                StreamPost::Done => (crate::ai::AI_EVENT_DONE, CLASS_AI_DONE),
+                StreamPost::Error => (crate::ai::AI_EVENT_ERROR, CLASS_AI_ERROR),
+            };
+            assert_eq!((event, class), expected, "a post names the same event twice");
+        }
+        // And the count no longer rides in the word, so the same event has one payload.
+        assert_eq!(StreamPost::Ready(12).event(), StreamPost::Ready(4096).event());
     }
 }

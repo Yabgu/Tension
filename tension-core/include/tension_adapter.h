@@ -610,7 +610,7 @@ typedef struct tension_pad_record {
  * twin, and the two are checked against each other at load, which is the only reason they
  * can safely be written twice.)
  */
-#define TENSION_ADAPTER_LAYOUT_HASH 3289783349u
+#define TENSION_ADAPTER_LAYOUT_HASH 4177755725u
 
 /** The most scalar parameters a registered import may take. */
 #define TENSION_ADAPTER_MAX_PARAMS 8u
