@@ -1139,10 +1139,34 @@ fn assert_suspend_serve_transcript(label: &str, run: &Run, value: i32) {
 ///
 /// The Windows half is asserted *positively*: a continuation guest cannot load there,
 /// so a run that did not report the refusal fails here rather than passing quietly.
+///
+/// # The sentence it asserts, and the one it used to (DL51)
+///
+/// The refusal is no longer wasmtime's own "this guest uses continuations, which
+/// wasmtime does not support on this target". The host now decides from the artifact's
+/// `tension.requires` block **before the module loads**, and states both sides — what
+/// the guest declares, and what this process provides — through
+/// `fiber::UnmetRequirement` (`tension-core/src/fiber.rs`):
+///
+/// ```text
+/// tension-core: this guest requires `<unmet>` (it declares backend `<b>`, target
+/// `<t>`, features [..]) and this host provides backend `<b>` on `<platform>`,
+/// stack-switching <on|off>, shared-memory <on|off> — refusing by name, nothing was run
+/// ```
+///
+/// Two phrases are the reason and the act — `this guest requires ` and
+/// `refusing by name` — and either changing silently is what this helper exists to
+/// catch. The old sentence is deliberately **not** accepted as an alternative: a host
+/// that went back to deciding at load time would satisfy a wider matcher while
+/// losing the pre-load guarantee (a guest whose requirements are unmet must never be
+/// instantiated).
 fn refused_for_want_of_continuations(label: &str, run: &Run) -> bool {
-    const SENTENCE: &str =
-        "this guest uses continuations, which wasmtime does not support on this target";
-    if !run.stderr.contains(SENTENCE) {
+    // The reason (`requires`, followed by what it needs) and the act (`refusing by
+    // name`). Together they distinguish this refusal from `fiber::Mismatch`, which
+    // also says "refusing by name" but never says "requires".
+    const REASON: &str = "this guest requires `";
+    const ACT: &str = "refusing by name";
+    if !(run.stderr.contains(REASON) && run.stderr.contains(ACT)) {
         assert!(
             !cfg!(windows),
             "{label}: Windows has no stack switching, so a continuation guest must be \
@@ -1152,10 +1176,17 @@ fn refused_for_want_of_continuations(label: &str, run: &Run) -> bool {
         );
         return false;
     }
+    // **2, not 1.** The requirement check runs in `main.rs` before the module is
+    // instantiated, so this is the loader's "nothing was run" exit — the same 2 every
+    // other named load refusal uses — and not the 1 a run that started and failed
+    // reports. Asserting 2 keeps that distinction; 1 would also pass for a guest that
+    // loaded and then failed, which is the outcome this refusal exists to prevent.
     assert_eq!(
         run.status,
-        Some(1),
-        "{label}: a refused guest must exit 1.\nstdout:\n{}\nstderr:\n{}",
+        Some(2),
+        "{label}: a refused guest must exit 2, got {:?} — the requirement is checked \
+         before the module loads, so nothing ran.\nstdout:\n{}\nstderr:\n{}",
+        run.status,
         run.stdout,
         run.stderr
     );
@@ -1164,8 +1195,11 @@ fn refused_for_want_of_continuations(label: &str, run: &Run) -> bool {
         "{label}: a refused guest must print nothing on stdout, got:\n{}",
         run.stdout
     );
+    // The platform, as `UnmetRequirement` spells it: `on `<platform>``, where the
+    // platform is `std::env::consts::OS` of the process that refused.
     assert!(
-        run.stderr.contains(&format!("({})", std::env::consts::OS)),
+        run.stderr
+            .contains(&format!("on `{}`", std::env::consts::OS)),
         "{label}: the refusal must name the platform it was refused on.\nstderr:\n{}",
         run.stderr
     );
