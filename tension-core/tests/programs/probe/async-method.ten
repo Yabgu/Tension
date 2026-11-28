@@ -1,0 +1,59 @@
+// **A suspending `async` method, on the fiber backend** (DL62, I126).
+//
+// The shape every OGRE example uses and the stackful backend refused:
+//
+//     class Counter { async run(id: i32): void { … await …; this.count += v; } }
+//
+// The refusal was `AS100: Not implemented: an async method (the stackful backend)`, and it
+// affected only a *suspending* method — one without an `await` merely had its modifier
+// cleared. Six OGRE examples and `platform-control` carried `--stackful-backend promise`
+// because of it.
+//
+// **Why it needed more than "lift the body".** A function's body is moved out to a top-level
+// `f$body`; a method's references `this`, and a lifted free function has no receiver.
+// Rewriting every `this` would be a walk over every node kind that can hold one — and would
+// still miss a closure that captures it. So the body stays a **member** of its class
+// (`run$body`), where `this` is exactly what it always was, and the task record carries the
+// receiver as its first field; `drive` calls `this.$p0.run$body(...)`.
+//
+// What this probe pins, and why each half is needed:
+//
+// - **the value, not a zero**: `after 10`, not `after 0`. A body that runs but loses its
+//   awaited value is the I103 shape.
+// - **the receiver survives the suspension**: `this.count` is read *after* the await *and*
+//   accumulated (`0 + 10`), so a record that dropped the receiver would print a different
+//   number or trap.
+// - **the hand-over is the host's**: the artifact imports `scheduler::ready` and exports
+//   `__driveSlot`. Without both, "the body ran" would have to mean the guest ran it itself.
+
+@external("tension::io", "print")
+declare function hostPrint(ptr: usize, len: i32): void;
+
+function line(text: string): void {
+  let bytes = String.UTF8.encode(text);
+  hostPrint(changetype<usize>(bytes), bytes.byteLength);
+  let newline = String.UTF8.encode("\n");
+  hostPrint(changetype<usize>(newline), newline.byteLength);
+}
+
+async function leaf(id: i32): i32 { return id * 10; }
+
+class Counter {
+  count: i32 = 0;
+  label: string = "ctr";
+
+  /** A suspending method: the shape this round lowers. */
+  async run(id: i32): void {
+    line(this.label + " before " + id.toString());
+    let value: i32 = await leaf(id);
+    // `this` **after** the await — the case a lift without a receiver breaks.
+    this.count += value;
+    line(this.label + " after " + this.count.toString());
+  }
+}
+
+export function _start_game(): void {
+  // A floating method call: statement position, value dropped. The transform rewrote the
+  // call into `__submitTask`, and the host's ready queue runs the body.
+  new Counter().run(1);
+}

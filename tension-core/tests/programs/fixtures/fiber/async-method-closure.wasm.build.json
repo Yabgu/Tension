@@ -1,0 +1,20 @@
+{
+  "compiler": "d464dfee32882d89bc5f50ca3749ef013aad9f0bb4b48e622308ae6892a687dc",
+  "compilerPath": "/home/acakar/work/TensionScript-a2/dist/asc.js",
+  "source": "probe/async-method-closure.ten",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--exportStart",
+    "__start",
+    "--optimizeLevel",
+    "0",
+    "--stackful-backend",
+    "fiber"
+  ],
+  "readSet": {
+    "std": "b4b23251631ba754481913d2928504fb9787f5c4b79c6438529ba0e15c09913f"
+  }
+}

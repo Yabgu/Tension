@@ -330,6 +330,11 @@ const PROGRAMS = {
   "main-step-replaced": ASYNC_ON_MAIN_FLAGS,
   // DL36's fiber executor guest: the I70 scenario on the fiber backend.
   "i70-fiber": FIBER_FLAGS,
+  // DL62, I126: a **suspending async method** lowered on fiber, and the closure-captures-
+  // `this` case that a lift without a receiver would break. `ASYNC_ON_MAIN_FIBER_FLAGS`
+  // because the claim is about this backend; the two programs open no session.
+  "async-method": ASYNC_ON_MAIN_FIBER_FLAGS,
+  "async-method-closure": ASYNC_ON_MAIN_FIBER_FLAGS,
   // DL61, I95: three spawned tasks, none awaited, all of which must run. `ASYNC_ON_MAIN_
   // FIBER_FLAGS` because the claim is about the fiber console path and the program opens no
   // session; `--optimizeLevel 0` like every other program here.
