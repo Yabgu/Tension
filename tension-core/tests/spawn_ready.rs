@@ -86,6 +86,47 @@ fn every_spawned_body_runs_once_in_submission_order() {
     );
 }
 
+/// **`examples/spawn`'s claim, made checkable** (DL63, I152).
+///
+/// The example said "two suspensions, so each body is a real fiber task" while its bodies
+/// awaited a helper that only `return 0`ed — and an async function with no `await` is not
+/// lowered at all, so those were ordinary calls. Its transcript could not tell the
+/// difference; the artifact can, and this asserts it: a floating spawn whose body awaits
+/// `rt.frame()` must import `scheduler::park`.
+///
+/// **It also records the limit of what that buys.** On fiber today the park made inside a
+/// drained body returns immediately instead of suspending — the body resumes with the
+/// default `0` and no producer has posted (I153). The transcript below carries `(frame 0)`
+/// for that reason, and it is asserted rather than hidden.
+#[test]
+fn a_floating_spawn_that_parks_imports_the_park() {
+    let path = guest_or_fixture("spawn-park", fiber_fixtures_dir());
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", path.display()));
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("scheduler") && text.contains("park"),
+        "a body that awaits `rt.frame()` must compile to a real park: without the import \
+         the await was inlined and the `await` is decoration"
+    );
+
+    let expected_text = std::fs::read_to_string(
+        programs_dir().join("probe/spawn-park.expected.txt"),
+    ).expect("the expected transcript is committed");
+    let expected = transcript(&expected_text);
+    let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
+        .arg(&path)
+        .output()
+        .expect("the interpreter runs");
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    assert_eq!(
+        transcript(&String::from_utf8_lossy(&output.stdout)),
+        expected,
+        "the spawned body must run, and `(frame 0)` is the measured consequence of I153 — \
+         if this line changes, the park started suspending and the comment above is stale"
+    );
+}
+
 #[test]
 fn ten_runs_read_the_same_transcript() {
     let mut first: Option<Vec<String>> = None;

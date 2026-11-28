@@ -1,0 +1,4 @@
+entry
+entry after spawn
+body before await rt.frame()
+body after await rt.frame() (frame 0)

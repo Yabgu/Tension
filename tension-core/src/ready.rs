@@ -110,9 +110,14 @@ pub struct ReadyQueue {
     /// a refused submission means the task does not run, so this is a lost wake
     /// and a test asserts it stays zero.
     refused_full: u64,
-    /// Submissions accepted, and slots the loop served. Equal at exit for a
-    /// program that awaits nothing and spawns N, which is the invariant
-    /// `tests/ready_queue.rs` states.
+    /// Submissions accepted, and slots the loop served.
+    ///
+    /// **Equal after a full drain** — `accepted_equals_served_after_a_full_drain`
+    /// below asserts it, and it is the queue half of "a program that awaits nothing
+    /// and spawns N runs N bodies", whose program half is `tests/spawn_ready.rs`.
+    /// (This used to cite `tests/ready_queue.rs`, a file that never existed — DL63.
+    /// The invariant was stated and never asserted anywhere, which is the same
+    /// defect in a citation as a green table over a broken guest.)
     accepted: u64,
     served: u64,
 }
@@ -196,6 +201,18 @@ mod tests {
         assert_eq!(order, vec![9, 5, 1], "FIFO is submission order, not sorted");
         assert_eq!(queue.served(), 3);
         assert_eq!(queue.next(), None);
+    }
+
+    #[test]
+    fn accepted_equals_served_after_a_full_drain() {
+        let mut queue = ReadyQueue::default();
+        for slot in 0..5u32 {
+            assert!(queue.submit(slot));
+        }
+        while queue.next().is_some() {}
+        assert_eq!(queue.accepted(), 5);
+        assert_eq!(queue.served(), 5, "every accepted slot is served exactly once");
+        assert_eq!(queue.refused_full(), 0, "and nothing was lost on the way");
     }
 
     #[test]

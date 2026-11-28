@@ -1,0 +1,21 @@
+{
+  "compiler": "8bc027ddca89b1f796fe2aad094d7c886bc9fd985f493a7d54b3beac842f25e9",
+  "compilerPath": "/home/acakar/work/TensionScript-a2/dist/asc.js",
+  "source": "probe/spawn-park.ten",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--exportStart",
+    "__start",
+    "--optimizeLevel",
+    "0",
+    "--stackful-backend",
+    "fiber"
+  ],
+  "readSet": {
+    "std": "b4b23251631ba754481913d2928504fb9787f5c4b79c6438529ba0e15c09913f",
+    "framework": "78c7802a69b684834f1b75ef71d018db314d359478f40a7151e869d163d48095"
+  }
+}

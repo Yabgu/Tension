@@ -6,10 +6,32 @@
 // builds is not a corpus that works. Each example runs in its own directory under a timeout,
 // and the outcome is one of four words — no prose, no judgement in the classifier:
 //
-//   ran              exit 0
+//   ran              exit 0 and nothing said otherwise
+//   ran-but-failed   exit 0, and the transcript says the guest failed (DL63)
 //   hung             no exit before the timeout (SIGKILL after)
 //   refused-by-name  exited non-zero and the output names a refusal
 //   needs-display    exited non-zero and the output says there is no display/device
+//   failed           exited non-zero and named neither — a crash (DL63)
+//
+// **A backend axis (DL63).** By default each example runs the artifact it declares —
+// which made "16 ran" a claim about declarations, not about the engine: four OGRE
+// examples declared `promise` and read as `ran` while doing nothing at all. Set
+// `TENSION_RUN_BACKEND=fiber` (or `continuation`, `promise`) and every example is
+// **rebuilt** for that backend before it runs, so the same corpus is measured on a
+// backend none of them declare:
+//
+//   TENSION_RUN_BACKEND=fiber npm run run:examples
+//
+// The table's `backend` column is read **from the artifact** (`tension.requires`), not
+// from the request, so a build that silently ignored the flag is visible rather than
+// assumed away.
+//
+// **A forced sweep rebuilds in place**, so it leaves the examples' `build/` directories
+// holding that profile's artifacts. Run the declared profile again (or
+// `npm run build:examples`) before trusting a declared table afterwards — measured in
+// DL63: a sweep was followed by a "declared" run that reported 4 `ran-but-failed` and 2
+// `hung` because those examples were still fiber builds. Stated here because the failure
+// mode is silent: every row looks like a normal row.
 //
 // **`hung` is the failure this instrument exists for**, so its exit status is non-zero.
 // Everything else is reported and tolerated: a `needs-display` example is a fact about the
@@ -30,6 +52,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { classify, declaredBackend, guestFailure, lastDiagnostic } from './lib/census-classify.mjs';
 
 const WIN = process.platform === 'win32';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,65 +92,39 @@ function findRunnable() {
     .sort();
 }
 
-/// The diagnostic a *host* prints when it has no display or no device. Deliberately about
-/// the host and not about the example: the same wording comes from SDL and Vulkan, and a
-/// list keyed on an example's name would be a hardcoded answer rather than a measurement.
-const DISPLAY_SIGNS = [
-  'no available video device',
-  'could not initialize',
-  'failed to create window',
-  'vulkan',
-  'x11',
-  'wayland',
-  'DISPLAY',
-  'no display',
-  'dri3',
-  'egl',
-  'surface 0x0',
-];
-
-/// Output that is the tree refusing something on purpose. `refused`, `not implemented`,
-/// `unavailable`, a capability the build does not have — all of these are the loader or the
-/// guest naming a limit, which is a pass for this instrument even though the exit is 1.
-const REFUSAL_SIGNS = [
-  'refused',
-  'not implemented',
-  'not available',
-  'requires ',
-  'unsupported',
-  'did not export',
-  'declares `start`',
-  'needs a session',
-  'no session',
-];
-
-function lastDiagnostic(text) {
-  const lines = text
-    .split('\n')
-    .map((line) => line.replace(/\x1b\[[0-9;]*m/g, '').trimEnd())
-    .filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (/^(Error|error:|ERROR|thread .* panicked|npm error)/.test(line)) return line;
-  }
-  return lines.length ? lines[lines.length - 1] : '';
-}
-
-function classify(status, timedOut, combined) {
-  if (timedOut) return 'hung';
-  if (status === 0) return 'ran';
-  const lower = combined.toLowerCase();
-  // Refusal first: a refusal that happens to name a display is still the tree saying no on
-  // purpose, and the four words are ordered by which fact is more specific.
-  if (REFUSAL_SIGNS.some((sign) => lower.includes(sign.toLowerCase()))) return 'refused-by-name';
-  if (DISPLAY_SIGNS.some((sign) => lower.includes(sign.toLowerCase()))) return 'needs-display';
-  return 'refused-by-name';
-}
+/// The backend this sweep forces, or `''` for each example's own declaration.
+const FORCED_BACKEND = (process.env.TENSION_RUN_BACKEND ?? '').trim();
+/// A rebuild in a forced profile runs a codegen step in some examples, so it gets its
+/// own, longer bound than the run.
+const BUILD_TIMEOUT = Number(process.env.TENSION_BUILD_TIMEOUT ?? 300);
 
 /// One example, in its own directory, under a timeout.
 function runOne(dir, timeoutSeconds) {
   const rel = relativeName(dir);
   const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+
+  // **A forced profile rebuilds first** (DL63). The host refuses a guest built for the
+  // other backend *by name* — `--executor` is a test instrument, not a converter — so the
+  // only honest way to run a `promise` example on fiber is to build it for fiber. The
+  // example's own build script supplies every other flag; a later `--stackful-backend`
+  // wins, which is what makes appending it here a *profile* rather than a second recipe.
+  if (FORCED_BACKEND) {
+    const built = spawnSync('npm', ['run', 'build', '--', '--stackful-backend', FORCED_BACKEND], {
+      cwd: dir,
+      shell: WIN,
+      timeout: BUILD_TIMEOUT * 1000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (built.status !== 0) {
+      const combined = `${built.stdout ?? ''}${built.stderr ?? ''}`;
+      return {
+        rel, backend: FORCED_BACKEND, verdict: 'build-failed',
+        detail: `${lastDiagnostic(combined) || 'the build exited non-zero'}`,
+      };
+    }
+  }
+
   // The artifact an example runs is named by its own config (`game.wasm`, `story.wasm`,
   // `demo.wasm`, …), so this asks the build directory rather than guessing at names: one
   // guessed list reported `audio` as unbuilt when it had always been built.
@@ -135,7 +133,14 @@ function runOne(dir, timeoutSeconds) {
     ? readdirSync(buildDir).filter((name) => name.endsWith('.wasm'))
     : [];
   if (!built.length) {
-    return { rel, verdict: 'no-artifact', detail: 'no build/*.wasm — run `npm run build:examples`' };
+    return { rel, backend: '-', verdict: 'no-artifact', detail: 'no build/*.wasm — run `npm run build:examples`' };
+  }
+  // The artifact's own claim, first `.wasm` in the build directory (an example builds one).
+  let backend = '-';
+  try {
+    backend = declaredBackend(readFileSync(join(buildDir, built[0])));
+  } catch {
+    backend = '-';
   }
 
   const started = Date.now();
@@ -153,9 +158,13 @@ function runOne(dir, timeoutSeconds) {
   const combined = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal === 'SIGKILL';
   const verdict = classify(result.status, timedOut, combined);
-  const detail = verdict === 'ran' ? `${elapsed}s` : `${elapsed}s — ${lastDiagnostic(combined)}`;
+  // A `ran` row is the elapsed time and nothing else; every other word quotes the line
+  // that decided it — and `ran-but-failed` quotes the *guest's* line, which is the whole
+  // point of the class.
+  const why = verdict === 'ran-but-failed' ? guestFailure(combined) : lastDiagnostic(combined);
+  const detail = verdict === 'ran' ? `${elapsed}s` : `${elapsed}s — ${why}`;
   void pkg;
-  return { rel, verdict, detail };
+  return { rel, backend, verdict, detail };
 }
 
 const filter = (process.env.TENSION_EXAMPLES ?? '')
@@ -174,14 +183,19 @@ if (filter.length) {
   }
 }
 
-console.log(`run-examples: ${examples.length} example(s), ${DEFAULT_TIMEOUT}s each, stdin closed`);
+console.log(
+  `run-examples: ${examples.length} example(s), ${DEFAULT_TIMEOUT}s each, stdin closed` +
+  (FORCED_BACKEND ? `, **rebuilt for backend=${FORCED_BACKEND}**` : ', each on its own declared backend')
+);
 console.log('');
 
 const rows = [];
 for (const dir of examples) {
   const row = runOne(dir, DEFAULT_TIMEOUT);
   rows.push(row);
-  console.log(`  ${row.verdict.padEnd(16)} ${row.rel.padEnd(28)} ${row.detail}`);
+  console.log(
+    `  ${String(row.backend).padEnd(12)} ${row.verdict.padEnd(16)} ${row.rel.padEnd(28)} ${row.detail}`
+  );
 }
 
 const counts = new Map();
@@ -189,16 +203,20 @@ for (const row of rows) counts.set(row.verdict, (counts.get(row.verdict) ?? 0) +
 const summary = [...counts.entries()].map(([verdict, n]) => `${n} ${verdict}`).join(', ');
 
 console.log('');
-console.log(`run-examples: ${rows.length} example(s) — ${summary}`);
+console.log(`run-examples: ${rows.length} example(s) — ${summary}${FORCED_BACKEND ? ` (backend=${FORCED_BACKEND})` : ''}`);
 
-// **`hung` is the failure.** Everything else is a fact about this host, the build, or a
-// refusal that is doing its job. A census that failed on `needs-display` would be red on
-// every runner without a GPU, which is the shape of a check nobody keeps green.
-const hung = rows.filter((row) => row.verdict === 'hung');
-if (hung.length) {
+// **`hung` is the failure**, and since DL63 so is `ran-but-failed`: a guest that said it
+// failed and exited 0 is the same species of green line, one word quieter. Everything
+// else is a fact about this host, the build, or a refusal that is doing its job — a census
+// that failed on `needs-display` would be red on every runner without a GPU, which is the
+// shape of a check nobody keeps green.
+const failed = rows.filter(
+  (row) => row.verdict === 'hung' || row.verdict === 'ran-but-failed' || row.verdict === 'failed'
+);
+if (failed.length) {
   console.error('');
-  console.error(`run-examples: ${hung.length} example(s) hung — this is the failure:`);
-  for (const row of hung) console.error(`  ${row.rel}: ${row.detail}`);
+  console.error(`run-examples: ${failed.length} example(s) did not do their work — this is the failure:`);
+  for (const row of failed) console.error(`  ${row.rel} [${row.backend}] ${row.verdict}: ${row.detail}`);
   process.exit(1);
 }
 process.exit(0);

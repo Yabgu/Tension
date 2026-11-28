@@ -17,13 +17,27 @@
 // body before the next line and gives you its value; this file prints its three lines after
 // the entry has already returned, which is why `done` comes last and not first.
 
-import { print } from "tension-framework";
+import { print, rt } from "tension-framework";
 
-/** Something that takes a moment: two suspensions, so each body is a real fiber task. */
+/**
+ * Something that takes a moment: **one real suspension** — `await rt.frame()` is a park on
+ * the frame clock, whose producer is the host's own loop, so the artifact imports
+ * `scheduler::park` and the body cannot be inlined away.
+ *
+ * (This used to await a local helper that `return 0`ed. An async function with no `await`
+ * in its body is not lowered at all — DL59's lesson — so those two calls were ordinary
+ * calls and the comment above them claiming "two suspensions" was false. The artifact is
+ * what settles it: `spawn_park.rs` asserts this shape imports the park.)
+ *
+ * **But a park inside a body driven by the ready drain does not currently suspend** on
+ * fiber: it returns immediately with no producer (I153, measured — `examples/spawn` prints
+ * in the same millisecond, and so do the four OGRE examples' loads). So the ordering below
+ * is the drain's, not the clock's, and the park's presence is asserted rather than its
+ * effect. Fixing that is engine shape and is not this round's.
+ */
 async function step(label: string): i32 {
-  await yieldOnce();
-  await yieldOnce();
-  print("  step " + label);
+  let frame: i32 = await rt.frame();
+  print("  step " + label + " (frame " + frame.toString() + ")");
   return 1;
 }
 
@@ -33,12 +47,13 @@ async function work(id: i32): void {
   print("work " + id.toString() + " finished (" + done.toString() + ")");
 }
 
-/** A park that needs no producer: the host's own loop resumes it. */
-async function yieldOnce(): i32 {
-  return 0;
+/** The frame clock, bound once: `rt.start()` is what lets a bare guest park at all. */
+function bindRuntime(): void {
+  rt.start();
 }
 
 export function _start_game(): void {
+  bindRuntime();
   print("spawning three tasks and not awaiting any of them");
   work(1);
   work(2);

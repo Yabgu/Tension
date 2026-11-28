@@ -161,6 +161,15 @@ jobs:
           # libtest hides a passing test's output, so name the binary here.
           lldb --version | head -1
 
+      # **The census's judgement, which needs nothing built** (DL63). Every round of this
+      # arc leans on `run:examples`' classification, and a judgement nothing checks let
+      # four OGRE examples read as `ran` for four rounds while they rendered nothing. This
+      # step is plain node over a pure function: no compiler, no GPU, no examples. The
+      # full profile sweep still needs all three, so it stays a local gate and the report
+      # says what it would take to move it here.
+      - name: Census classifier
+        run: node scripts/test-census-classify.mjs
+
       - name: E2E debug assertions
         run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test e2e_debug
 

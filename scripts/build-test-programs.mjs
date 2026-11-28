@@ -334,6 +334,9 @@ const PROGRAMS = {
   // `this` case that a lift without a receiver would break. `ASYNC_ON_MAIN_FIBER_FLAGS`
   // because the claim is about this backend; the two programs open no session.
   "async-method": ASYNC_ON_MAIN_FIBER_FLAGS,
+  // DL63, I152: a floating spawn whose body awaits the frame clock, so the artifact must
+  // import `scheduler::park`. `examples/spawn` claims the same shape.
+  "spawn-park": ASYNC_ON_MAIN_FIBER_FLAGS,
   "async-method-closure": ASYNC_ON_MAIN_FIBER_FLAGS,
   // DL61, I95: three spawned tasks, none awaited, all of which must run. `ASYNC_ON_MAIN_
   // FIBER_FLAGS` because the claim is about the fiber console path and the program opens no
@@ -341,7 +344,20 @@ const PROGRAMS = {
   "spawn-ready": ASYNC_ON_MAIN_FIBER_FLAGS,
   // **No continuation twin, deliberately** (DL61 decision 7): a floating spawn on that
   // backend has no driver once the entry returns, so it is refused by name rather than
-  // compiled to a silent zero. `spawn_ready.rs` asserts that refusal.
+  // compiled to a silent zero.
+  //
+  // **Where that refusal is asserted** (DL63, I150): this comment used to say
+  // "`spawn_ready.rs` asserts that refusal", and `spawn_ready.rs` has no compiler — it
+  // reads committed artifacts, so it could not. The assertion lives in the compiler's own
+  // suite, where a compiler exists:
+  // `TensionScript/tests/compiler/continuation-spawn/spawn-refused.json`, whose expected
+  // stderr is the message verbatim, so changing a word there turns that test red.
+  //
+  // A related number, for the reader who comes here after `schedule-order`: that program
+  // prints **`steps 15` on continuation and `steps 0` on fiber** (both measured, DL63).
+  // The two are not in conflict — `schedule-order`'s `main` *awaits* its tasks, so on
+  // continuation its custom step drives the ring during that await. What has no driver is
+  // a **floating** spawn that nobody awaits, after the entry has returned.
 };
 
 /**
