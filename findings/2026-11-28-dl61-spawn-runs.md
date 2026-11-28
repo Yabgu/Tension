@@ -247,8 +247,9 @@ same claim. That is a finding about the instrument, not a defect in this round.
 - **The two-method fixture of decision 3.** Reasoned above; not built.
 - **Windows and macOS.** A floating spawn on fiber is portable ABI (an import plus an export,
   no stack switching), but this round ran only on Linux.
-- **`examples/ai` and `async-io` determinism for this round.** Both `ran` in the census
-  at their usual times, and neither touches the spawn path; DL60's 10/10 was not re-run here.
+- **`examples/ai` and `async-io`**: re-run here after the change, **10/10 rc=0 each**, guest
+  output identical across all ten (`async-io`'s raw files differ only in log timestamps).
+  Neither touches the spawn path; both were re-measured rather than assumed.
 - **The `async method` gap (I126)** — untouched, and now the next round's subject: an
   unawaited `game.run()` needs spawn to work before it can be judged, which is what this
   round delivered.
