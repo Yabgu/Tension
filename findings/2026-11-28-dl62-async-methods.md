@@ -6,8 +6,8 @@ I126's compile-time gap is closed; but none of those eight examples *runs* on fi
 two causes that are not this round's.
 
 ```
-Tension        feat/dl59-ready-queue  e28b6de   clean
-TensionScript  feat/dl59-ready-queue  398351d4  clean
+Tension        feat/dl59-ready-queue  e28b6de   clean   CI success (46092798075)
+TensionScript  feat/dl59-ready-queue  70ae8944  clean   CI success (46094995708)
 ```
 
 ---
@@ -180,7 +180,7 @@ the random temp-pack path). `ogre/input-camera` hangs before and after — named
 | `--bin` | **311 passed** |
 | `build:examples` | **23 of 23**, exit 0 |
 | `run:examples` | **16 ran · 1 hung · 1 refused** — unchanged |
-| CI | Tension and TensionScript, run ids in the round's message |
+| CI | Tension **success** `46092798075` · TensionScript **success** `46094995708` |
 
 **The artifact delta was declared as `none` before measuring, one row moved, and the cause
 was found rather than accepted.** `debug/main-policy.wasm` shifted 15 bytes in `.debug_line`
@@ -188,6 +188,42 @@ and `.debug_ranges`, with the code and symbol sections byte-identical. Cause: th
 refactor handed the start function's argument nodes the **function's** source range instead
 of each parameter's own, and DWARF attributes instructions through those ranges. Restoring
 per-node ranges returned every artifact to its committed bytes: 10/10, nothing regenerated.
+
+## 6a. One CI red, quoted: the self-host refused my own code twice
+
+The first push of this round turned **Bootstrap (debug)** red (`46092794660`):
+
+```
+ERROR TS2322: Type '~lib/array/Array<src/ast/TypeParameterNode> | null' is not assignable
+              to type '~lib/array/Array<src/ast/TypeParameterNode>'
+   1103 │ if (declaration.typeParameters != null && declaration.typeParameters.length != 0) {
+ERROR AS100: Not implemented: Interface hidden classes
+```
+
+Both are my own new code, refused by a compiler that is the shipping one:
+
+- **`interface MethodLift`** — the self-host does not accept an interface in that position, so
+  it is a **class** with a constructor now (which is the shape the transform already uses).
+- **the null narrowing** — the self-host does not narrow a nullable *property* across `&&`;
+  binding it to a local first (how `transformFunction` already writes it) fixes it.
+
+Fixed and both `bootstrap:debug` **and** `bootstrap:release` run locally before re-pushing:
+exit 0 each, and this repo's own suite afterwards reports zero `fixture mismatch`. This is the
+second round in a row where the bootstrap caught a class of error `node scripts/build` cannot
+see — it compiles the tree with *itself*.
+
+## 6b. What Tension's CI does and does not check
+
+`e2e-debug.yml` has one job on `ubuntu-latest`, initialises only the `ImageViewer` submodule,
+and **runs neither `scripts/rebuild.mjs --check` nor any compiler build**. So:
+
+- the "10/10, delta none" row above is a **local** measurement with
+  `TENSIONSCRIPT_DIR=~/work/TensionScript-a2` — which is how this project has always verified
+  it, and it is the only place the fixture bytes are compared against a fresh build;
+- the two new `fixtures/fiber/async-method*.wasm` were produced by **this branch's** compiler,
+  so a fresh clone on the vendored pin would report them behind until the pin is bumped with
+  the branch. That is the same arrangement `spawn_ready` landed under in DL61; it is worth
+  saying out loud because "CI is green" does not cover it.
 
 ## 7. What the tree contradicted in this brief
 
