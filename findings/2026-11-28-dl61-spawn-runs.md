@@ -5,8 +5,8 @@ that owns the queue. The brief's diagnosis was wrong in one specific way, and th
 is the round's finding.
 
 ```
-Tension        feat/dl59-ready-queue  c96da9d   clean
-TensionScript  feat/dl59-ready-queue  56a37f6c  clean
+Tension        feat/dl59-ready-queue  7b7841a7  clean   CI success (46087651129)
+TensionScript  feat/dl59-ready-queue  339519c8  clean   CI success (46087648331)
 ```
 
 ---
@@ -162,7 +162,7 @@ probe: resume   frame=1 resumes=2
 | `build:examples` | **23 of 23**, exit 0 |
 | `run:examples` | **16 ran · 1 hung · 1 refused** — 16 ran, up from 15: `spawn` joined the corpus and ran |
 | TensionScript's own suite | green, **zero `fixture mismatch`** |
-| CI | Tension and TensionScript, run ids in the round's message |
+| CI | Tension **success** `46087651129` · TensionScript **success** `46087648331` |
 
 **Artifact delta, declared before measuring and then measured**: one golden,
 `fixtures/debug/main-policy.wasm` (+1 byte, DWARF line rows shifted because `task-stack.ts`
@@ -170,6 +170,24 @@ grew by the builtin declaration). Symbol sets are identical — `diff` of the so
 is empty. Plus the new `fixtures/fiber/spawn-ready.wasm` and its sidecar. Nothing else moved:
 the hand-over is emitted only where it is called, so `interop/*`, `features/*` and
 `bindings/*` are byte-identical (this repo's suite says so).
+
+## 5a. One CI red, quoted: the bootstrap parsed my field
+
+The first push of this round turned **Bootstrap (release)** red (`46085496168`):
+
+```
+ERROR TS1110: Type expected.
+ 501 │ loweredAsync = new Set<string>();
+     └─ in src/program.ts(501,3)
+```
+
+The compiler builds itself in CI, and the *bootstrap* compiler is the shipping one — which
+does not accept a class field with no type annotation. Every other `Set` field in that file
+writes both (`stdSources: Set<Source> = new Set()`), and I had written only the initializer.
+Fixed to `loweredAsync: Set<string> = new Set()`, and both `bootstrap:release` and
+`bootstrap:debug` were then run locally before re-pushing: **exit 0**. Worth stating because
+it is a gate that only exists in CI: a local `node scripts/build` compiles the tree with
+*itself*, so it cannot see a syntax the self-host does not parse.
 
 ## 6. The census, and its blind spot
 
